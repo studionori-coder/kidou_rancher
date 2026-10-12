@@ -1,0 +1,8 @@
+**/bin/
+**/obj/
+**/artifacts/
+.vs/
+*.user
+
+# 個人の設定バックアップ（フォルダーパスを含むため公開しない）
+kidou-rancher-backup*.json

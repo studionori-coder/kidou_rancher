@@ -1,0 +1,716 @@
+using KidouRancher.Models;
+using KidouRancher.Services;
+
+namespace KidouRancher;
+
+public sealed class MainForm : Form
+{
+    private readonly ProjectStore _store = new();
+    private readonly BackupService _backupService = new();
+    private readonly PreferencesStore _preferencesStore = new();
+    private readonly ExplorerTabLauncher _launcher = new();
+    private readonly ListBox _projectList = new();
+    private readonly ListView _folderList = new();
+    private readonly Label _folderHeading = new();
+    private readonly Button _launchButton = new();
+    private readonly Button _moveFolderUpButton = new();
+    private readonly Button _moveFolderDownButton = new();
+    private readonly Button _moveProjectUpButton = new();
+    private readonly Button _moveProjectDownButton = new();
+    private LauncherSettings _settings;
+    private bool _updatingSelection;
+    private int _folderStatusVersion;
+
+    public MainForm()
+    {
+        Text = "起動ランチャー";
+        MinimumSize = new Size(760, 480);
+        Size = new Size(940, 620);
+        StartPosition = FormStartPosition.CenterScreen;
+        Font = new Font("Yu Gothic UI", 9F);
+        BackColor = Color.FromArgb(248, 249, 250);
+
+        try
+        {
+            _settings = _store.Load();
+        }
+        catch (Exception exception)
+        {
+            _settings = new LauncherSettings();
+            Shown += (_, _) => MessageBox.Show(
+                this,
+                $"保存済み設定を読み込めませんでした。設定ファイルを確認してください。\n\n{exception.Message}",
+                "設定の読み込みエラー",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+
+        BuildLayout();
+        RefreshProjects();
+    }
+
+    private void BuildLayout()
+    {
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 3,
+            Padding = new Padding(20),
+            BackColor = BackColor
+        };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 64));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 66));
+        Controls.Add(root);
+
+        var header = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        header.Controls.Add(new Label
+        {
+            Text = "プロジェクトランチャー",
+            Dock = DockStyle.Fill,
+            Font = new Font("Yu Gothic UI", 19F, FontStyle.Bold),
+            ForeColor = Color.FromArgb(30, 43, 54),
+            TextAlign = ContentAlignment.MiddleLeft
+        }, 0, 0);
+        var backupButtons = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.RightToLeft,
+            WrapContents = false,
+            Padding = new Padding(0, 13, 0, 0)
+        };
+        backupButtons.Controls.Add(CreateButton("読み込み", (_, _) => ImportSettings()));
+        backupButtons.Controls.Add(CreateButton("書き出し", (_, _) => ExportSettings()));
+        header.Controls.Add(backupButtons, 1, 0);
+        root.Controls.Add(header, 0, 0);
+
+        var content = new SplitContainer
+        {
+            Dock = DockStyle.Fill,
+            FixedPanel = FixedPanel.Panel1,
+            Size = new Size(700, 400),
+            BackColor = Color.FromArgb(222, 227, 231),
+            SplitterDistance = 280,
+            Panel1MinSize = 210,
+            Panel2MinSize = 320
+        };
+        root.Controls.Add(content, 0, 1);
+
+        var projectPanel = CreatePanel();
+        content.Panel1.Controls.Add(projectPanel);
+        var projectLayout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1 };
+        projectLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        projectLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        projectLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 78));
+        projectPanel.Controls.Add(projectLayout);
+        projectLayout.Controls.Add(new Label
+        {
+            Text = "プロジェクト",
+            Dock = DockStyle.Fill,
+            Font = new Font("Yu Gothic UI", 10F, FontStyle.Bold),
+            ForeColor = Color.FromArgb(64, 78, 88),
+            TextAlign = ContentAlignment.MiddleLeft
+        }, 0, 0);
+        _projectList.Dock = DockStyle.Fill;
+        _projectList.BorderStyle = BorderStyle.None;
+        _projectList.IntegralHeight = false;
+        _projectList.Font = new Font("Yu Gothic UI", 10F);
+        _projectList.SelectedIndexChanged += (_, _) =>
+        {
+            UpdateProjectMoveButtons();
+            RefreshFolders();
+        };
+        projectLayout.Controls.Add(_projectList, 0, 1);
+        projectLayout.Controls.Add(CreateProjectButtons(), 0, 2);
+
+        var folderPanel = CreatePanel();
+        folderPanel.Padding = new Padding(18);
+        content.Panel2.Controls.Add(folderPanel);
+        var folderLayout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1 };
+        folderLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        folderLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        folderLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        folderPanel.Controls.Add(folderLayout);
+        _folderHeading.Dock = DockStyle.Fill;
+        _folderHeading.Font = new Font("Yu Gothic UI", 11F, FontStyle.Bold);
+        _folderHeading.ForeColor = Color.FromArgb(64, 78, 88);
+        _folderHeading.TextAlign = ContentAlignment.MiddleLeft;
+        folderLayout.Controls.Add(_folderHeading, 0, 0);
+
+        _folderList.Dock = DockStyle.Fill;
+        _folderList.View = View.Details;
+        _folderList.FullRowSelect = true;
+        _folderList.MultiSelect = true;
+        _folderList.HideSelection = false;
+        _folderList.BorderStyle = BorderStyle.FixedSingle;
+        _folderList.SelectedIndexChanged += (_, _) => UpdateFolderMoveButtons();
+        _folderList.ContextMenuStrip = CreateFolderContextMenu();
+        _folderList.KeyDown += OnFolderListKeyDown;
+        _folderList.DoubleClick += (_, _) => OpenSelectedFolders();
+        _folderList.Columns.Add("フォルダー", 480);
+        _folderList.Columns.Add("状態", 100);
+        folderLayout.Controls.Add(_folderList, 0, 1);
+
+        var folderButtons = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Padding = new Padding(0, 7, 0, 0)
+        };
+        folderButtons.Controls.Add(CreateButton("フォルダーを追加", (_, _) => AddFolders()));
+        folderButtons.Controls.Add(CreateButton("選択を削除", (_, _) => RemoveFolders()));
+        ApplyButtonStyle(_moveFolderUpButton);
+        ApplyButtonStyle(_moveFolderDownButton);
+        _moveFolderUpButton.Text = "上へ";
+        _moveFolderUpButton.Click += (_, _) => MoveSelectedFolder(-1);
+        folderButtons.Controls.Add(_moveFolderUpButton);
+        _moveFolderDownButton.Text = "下へ";
+        _moveFolderDownButton.Click += (_, _) => MoveSelectedFolder(1);
+        folderButtons.Controls.Add(_moveFolderDownButton);
+        folderLayout.Controls.Add(folderButtons, 0, 2);
+
+        var footer = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.RightToLeft,
+            WrapContents = false,
+            Padding = new Padding(0, 12, 0, 0)
+        };
+        _launchButton.Text = "▶  一括起動";
+        _launchButton.Width = 150;
+        _launchButton.Height = 40;
+        _launchButton.FlatStyle = FlatStyle.Flat;
+        _launchButton.FlatAppearance.BorderSize = 0;
+        _launchButton.BackColor = Color.FromArgb(28, 112, 93);
+        _launchButton.ForeColor = Color.White;
+        _launchButton.Font = new Font("Yu Gothic UI", 10F, FontStyle.Bold);
+        _launchButton.Click += async (_, _) => await LaunchSelectedAsync();
+        footer.Controls.Add(_launchButton);
+        root.Controls.Add(footer, 0, 2);
+    }
+
+    private ContextMenuStrip CreateFolderContextMenu()
+    {
+        var menu = new ContextMenuStrip();
+        menu.Items.Add(new ToolStripMenuItem("パスをコピー", null, (_, _) => CopySelectedFolderPaths()) { ShortcutKeyDisplayString = "Ctrl+C" });
+        menu.Items.Add(new ToolStripMenuItem("エクスプローラーで開く", null, (_, _) => OpenSelectedFolders()) { ShortcutKeyDisplayString = "Enter" });
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(new ToolStripMenuItem("削除", null, (_, _) => RemoveFolders()) { ShortcutKeyDisplayString = "Delete" });
+
+        // 項目の無い場所で右クリックしたときはメニューを出さない
+        menu.Opening += (_, e) => e.Cancel = _folderList.SelectedItems.Count == 0;
+        return menu;
+    }
+
+    private void OnFolderListKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Control && e.KeyCode == Keys.C)
+        {
+            CopySelectedFolderPaths();
+        }
+        else if (e.Control && e.KeyCode == Keys.A)
+        {
+            foreach (ListViewItem item in _folderList.Items)
+            {
+                item.Selected = true;
+            }
+        }
+        else if (e.KeyCode == Keys.Enter)
+        {
+            OpenSelectedFolders();
+        }
+        else if (e.KeyCode == Keys.Delete)
+        {
+            RemoveFolders();
+        }
+        else
+        {
+            return;
+        }
+
+        e.Handled = true;
+        e.SuppressKeyPress = true;
+    }
+
+    private FlowLayoutPanel CreateProjectButtons()
+    {
+        var buttons = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Bottom,
+            Height = 78,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = true,
+            Padding = new Padding(0, 5, 0, 0)
+        };
+        buttons.Controls.Add(CreateButton("追加", (_, _) => AddProject()));
+        buttons.Controls.Add(CreateButton("名前変更", (_, _) => RenameProject()));
+        var deleteButton = CreateButton("削除", (_, _) => DeleteProject());
+        buttons.Controls.Add(deleteButton);
+        buttons.SetFlowBreak(deleteButton, true);
+
+        // 並び替えボタンは横幅の狭い左ペインに収まるよう2段目に置く
+        _moveProjectUpButton.Text = "上へ";
+        _moveProjectUpButton.Click += (_, _) => MoveSelectedProject(-1);
+        _moveProjectDownButton.Text = "下へ";
+        _moveProjectDownButton.Click += (_, _) => MoveSelectedProject(1);
+        foreach (var moveButton in new[] { _moveProjectUpButton, _moveProjectDownButton })
+        {
+            ApplyButtonStyle(moveButton);
+            moveButton.Margin = new Padding(0, 6, 7, 0);
+            buttons.Controls.Add(moveButton);
+        }
+
+        return buttons;
+    }
+
+    private static Panel CreatePanel() => new()
+    {
+        Dock = DockStyle.Fill,
+        Padding = new Padding(14),
+        BackColor = Color.White,
+        BorderStyle = BorderStyle.FixedSingle
+    };
+
+    private static Button CreateButton(string text, EventHandler onClick)
+    {
+        var button = new Button { Text = text };
+        ApplyButtonStyle(button);
+        button.Click += onClick;
+        return button;
+    }
+
+    private static void ApplyButtonStyle(Button button)
+    {
+        button.AutoSize = true;
+        button.Height = 30;
+        button.FlatStyle = FlatStyle.Flat;
+        button.BackColor = Color.FromArgb(242, 245, 246);
+        button.ForeColor = Color.FromArgb(40, 57, 68);
+        button.Margin = new Padding(0, 0, 7, 0);
+        button.Padding = new Padding(7, 0, 7, 0);
+        button.FlatAppearance.BorderColor = Color.FromArgb(220, 226, 229);
+    }
+
+    private LauncherProject? SelectedProject => _projectList.SelectedItem as LauncherProject;
+
+    private void RefreshProjects(Guid? selectedProjectId = null)
+    {
+        _updatingSelection = true;
+        _projectList.BeginUpdate();
+        _projectList.Items.Clear();
+        foreach (var project in _settings.Projects)
+        {
+            _projectList.Items.Add(project);
+        }
+
+        var selectedIndex = selectedProjectId is null
+            ? Math.Min(_projectList.Items.Count - 1, 0)
+            : _settings.Projects.FindIndex(project => project.Id == selectedProjectId);
+        if (selectedIndex >= 0)
+        {
+            _projectList.SelectedIndex = selectedIndex;
+        }
+
+        _projectList.EndUpdate();
+        _updatingSelection = false;
+        UpdateProjectMoveButtons();
+        RefreshFolders();
+    }
+
+    private void RefreshFolders()
+    {
+        if (_updatingSelection)
+        {
+            return;
+        }
+
+        var project = SelectedProject;
+        _folderHeading.Text = project is null ? "フォルダー" : $"{project.Name} のフォルダー";
+        var version = ++_folderStatusVersion;
+        _folderList.BeginUpdate();
+        _folderList.Items.Clear();
+        if (project is not null)
+        {
+            foreach (var folder in project.Folders)
+            {
+                // 存在確認は非同期で行い、結果が出るまでは「確認中」と表示する
+                var item = new ListViewItem(folder) { ForeColor = Color.FromArgb(120, 132, 140) };
+                item.SubItems.Add("確認中…");
+                _folderList.Items.Add(item);
+            }
+        }
+
+        _folderList.EndUpdate();
+        _launchButton.Enabled = project is { Folders.Count: > 0 };
+        UpdateFolderMoveButtons();
+        if (project is { Folders.Count: > 0 })
+        {
+            _ = UpdateFolderStatusesAsync(version, project.Folders.ToArray());
+        }
+    }
+
+    private async Task UpdateFolderStatusesAsync(int version, string[] folders)
+    {
+        var results = await Task.Run(() => folders.Select(Directory.Exists).ToArray());
+        if (version != _folderStatusVersion || IsDisposed || _folderList.Items.Count != folders.Length)
+        {
+            return;
+        }
+
+        _folderList.BeginUpdate();
+        for (var index = 0; index < folders.Length; index++)
+        {
+            var item = _folderList.Items[index];
+            if (!string.Equals(item.Text, folders[index], StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var exists = results[index];
+            item.ForeColor = exists ? Color.FromArgb(44, 59, 68) : Color.FromArgb(185, 73, 61);
+            item.SubItems[1].Text = exists ? "利用可能" : "見つかりません";
+        }
+
+        _folderList.EndUpdate();
+    }
+
+    private void UpdateProjectMoveButtons()
+    {
+        var selectedIndex = _projectList.SelectedIndex;
+        _moveProjectUpButton.Enabled = selectedIndex > 0;
+        _moveProjectDownButton.Enabled = selectedIndex >= 0 && selectedIndex < _settings.Projects.Count - 1;
+    }
+
+    private void UpdateFolderMoveButtons()
+    {
+        var project = SelectedProject;
+        var canMove = project is not null && _folderList.SelectedIndices.Count == 1;
+        var selectedIndex = canMove ? _folderList.SelectedIndices[0] : -1;
+        _moveFolderUpButton.Enabled = canMove && selectedIndex > 0;
+        _moveFolderDownButton.Enabled = canMove && selectedIndex < project!.Folders.Count - 1;
+    }
+
+    private void AddProject()
+    {
+        var name = PromptForName("新しいプロジェクト", "プロジェクト名");
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return;
+        }
+
+        name = name.Trim();
+        if (_settings.Projects.Any(project => string.Equals(project.Name, name, StringComparison.OrdinalIgnoreCase)))
+        {
+            ShowError("同じ名前のプロジェクトがすでにあります。");
+            return;
+        }
+
+        var project = new LauncherProject { Name = name };
+        _settings.Projects.Add(project);
+        SaveAndRefresh(project.Id);
+    }
+
+    private void RenameProject()
+    {
+        var project = SelectedProject;
+        if (project is null)
+        {
+            return;
+        }
+
+        var name = PromptForName("プロジェクト名の変更", "プロジェクト名", project.Name);
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return;
+        }
+
+        name = name.Trim();
+        if (_settings.Projects.Any(other => other.Id != project.Id && string.Equals(other.Name, name, StringComparison.OrdinalIgnoreCase)))
+        {
+            ShowError("同じ名前のプロジェクトがすでにあります。");
+            return;
+        }
+
+        project.Name = name;
+        SaveAndRefresh(project.Id);
+    }
+
+    private void DeleteProject()
+    {
+        var project = SelectedProject;
+        if (project is null || MessageBox.Show(this, $"「{project.Name}」を削除しますか？", "プロジェクトの削除", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+        {
+            return;
+        }
+
+        _settings.Projects.Remove(project);
+        SaveAndRefresh();
+    }
+
+    private void MoveSelectedProject(int direction)
+    {
+        var project = SelectedProject;
+        if (project is null)
+        {
+            return;
+        }
+
+        var currentIndex = _settings.Projects.IndexOf(project);
+        var targetIndex = currentIndex + direction;
+        if (currentIndex < 0 || targetIndex < 0 || targetIndex >= _settings.Projects.Count)
+        {
+            return;
+        }
+
+        (_settings.Projects[currentIndex], _settings.Projects[targetIndex]) = (_settings.Projects[targetIndex], _settings.Projects[currentIndex]);
+        SaveAndRefresh(project.Id);
+    }
+
+    private void AddFolders()
+    {
+        var project = SelectedProject;
+        if (project is null)
+        {
+            return;
+        }
+
+        using var dialog = new FolderBrowserDialog { Description = "追加するフォルダーを選択してください。", Multiselect = true };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        var folders = dialog.SelectedPaths.Length > 0 ? dialog.SelectedPaths : [dialog.SelectedPath];
+        foreach (var folder in folders.Where(folder => !string.IsNullOrWhiteSpace(folder)))
+        {
+            if (!project.Folders.Contains(folder, StringComparer.OrdinalIgnoreCase))
+            {
+                project.Folders.Add(folder);
+            }
+        }
+
+        SaveAndRefresh(project.Id);
+    }
+
+    private void RemoveFolders()
+    {
+        var project = SelectedProject;
+        if (project is null || _folderList.SelectedItems.Count == 0)
+        {
+            return;
+        }
+
+        var selectedPaths = _folderList.SelectedItems.Cast<ListViewItem>().Select(item => item.Text).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        project.Folders.RemoveAll(folder => selectedPaths.Contains(folder));
+        SaveAndRefresh(project.Id);
+    }
+
+    private string[] SelectedFolderPaths() =>
+        _folderList.SelectedItems.Cast<ListViewItem>().Select(item => item.Text).ToArray();
+
+    private void CopySelectedFolderPaths()
+    {
+        var paths = SelectedFolderPaths();
+        if (paths.Length == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            // 複数選択時は1行に1パスずつ並べてコピーする
+            Clipboard.SetText(string.Join(Environment.NewLine, paths));
+        }
+        catch (Exception exception)
+        {
+            ShowError($"クリップボードにコピーできませんでした。\n{exception.Message}");
+        }
+    }
+
+    private void OpenSelectedFolders()
+    {
+        var paths = SelectedFolderPaths();
+        if (paths.Length == 0)
+        {
+            return;
+        }
+
+        var missing = paths.Where(path => !Directory.Exists(path)).ToArray();
+        ExplorerTabLauncher.OpenIndividually(paths);
+        if (missing.Length > 0)
+        {
+            ShowError($"次のフォルダーが見つかりません。\n{string.Join(Environment.NewLine, missing)}");
+        }
+    }
+
+    private void MoveSelectedFolder(int direction)
+    {
+        var project = SelectedProject;
+        if (project is null || _folderList.SelectedIndices.Count != 1)
+        {
+            return;
+        }
+
+        var currentIndex = _folderList.SelectedIndices[0];
+        var targetIndex = currentIndex + direction;
+        if (targetIndex < 0 || targetIndex >= project.Folders.Count)
+        {
+            return;
+        }
+
+        (project.Folders[currentIndex], project.Folders[targetIndex]) = (project.Folders[targetIndex], project.Folders[currentIndex]);
+        SaveAndRefresh(project.Id, project.Folders[targetIndex]);
+    }
+
+    private async Task LaunchSelectedAsync()
+    {
+        var project = SelectedProject;
+        if (project is null)
+        {
+            return;
+        }
+
+        _launchButton.Enabled = false;
+        try
+        {
+            var result = await _launcher.OpenFoldersAsync(project.Folders, CancellationToken.None);
+            if (result.Success)
+            {
+                return;
+            }
+
+            var remaining = (result.RemainingFolders ?? project.Folders.Where(Directory.Exists).ToArray()).ToArray();
+            if (remaining.Length == 0)
+            {
+                MessageBox.Show(this, result.Message, "一括起動", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var prompt = result.Message + $"\n\n未起動のフォルダー {remaining.Length} 件を個別のウィンドウで開きますか？";
+            if (MessageBox.Show(this, prompt, "一括起動", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+            {
+                ExplorerTabLauncher.OpenIndividually(remaining);
+            }
+        }
+        finally
+        {
+            _launchButton.Enabled = SelectedProject is { Folders.Count: > 0 };
+        }
+    }
+
+    private void ExportSettings()
+    {
+        const string defaultFileName = "kidou-rancher-backup.json";
+        var preferences = _preferencesStore.Load();
+        using var dialog = new SaveFileDialog
+        {
+            Title = "設定を書き出す",
+            Filter = "JSONファイル (*.json)|*.json",
+            FileName = defaultFileName,
+            DefaultExt = "json"
+        };
+
+        // 前回の書き出し先を初期値にする（フォルダーが無くなっていれば既定に戻す）
+        var lastDirectory = Path.GetDirectoryName(preferences.LastExportPath);
+        if (!string.IsNullOrEmpty(lastDirectory) && Directory.Exists(lastDirectory))
+        {
+            dialog.InitialDirectory = lastDirectory;
+            dialog.FileName = Path.GetFileName(preferences.LastExportPath) is { Length: > 0 } lastFileName ? lastFileName : defaultFileName;
+        }
+
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        try
+        {
+            _backupService.Export(_settings, dialog.FileName);
+            preferences.LastExportPath = dialog.FileName;
+            _preferencesStore.Save(preferences);
+        }
+        catch (Exception exception)
+        {
+            ShowError($"設定を書き出せませんでした。\n{exception.Message}");
+        }
+    }
+
+    private void ImportSettings()
+    {
+        using var dialog = new OpenFileDialog { Title = "設定を読み込む", Filter = "JSONファイル (*.json)|*.json" };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        try
+        {
+            var importedSettings = _backupService.Import(dialog.FileName);
+            if (MessageBox.Show(this, $"プロジェクト {importedSettings.Projects.Count} 件で現在の設定を置き換えますか？", "設定の読み込み", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            {
+                return;
+            }
+
+            _store.Save(importedSettings);
+            _settings = importedSettings;
+            RefreshProjects();
+        }
+        catch (Exception exception)
+        {
+            ShowError($"設定を読み込めませんでした。\n{exception.Message}");
+        }
+    }
+
+    private void SaveAndRefresh(Guid? selectedProjectId = null, string? selectedFolderPath = null)
+    {
+        try
+        {
+            _store.Save(_settings);
+            RefreshProjects(selectedProjectId);
+            if (selectedFolderPath is not null)
+            {
+                var selectedItem = _folderList.Items.Cast<ListViewItem>().FirstOrDefault(item =>
+                    string.Equals(item.Text, selectedFolderPath, StringComparison.OrdinalIgnoreCase));
+                if (selectedItem is not null)
+                {
+                    selectedItem.Selected = true;
+                    selectedItem.EnsureVisible();
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            ShowError($"設定を保存できませんでした。\n{exception.Message}");
+        }
+    }
+
+    private string? PromptForName(string title, string label, string? initialValue = null)
+    {
+        using var dialog = new Form
+        {
+            Text = title,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterParent,
+            MinimizeBox = false,
+            MaximizeBox = false,
+            ClientSize = new Size(380, 126),
+            Font = Font
+        };
+        var prompt = new Label { Text = label, Left = 16, Top = 16, Width = 340 };
+        var input = new TextBox { Left = 16, Top = 42, Width = 348, Text = initialValue ?? string.Empty };
+        var save = new Button { Text = "決定", DialogResult = DialogResult.OK, Left = 204, Top = 82, Width = 76 };
+        var cancel = new Button { Text = "キャンセル", DialogResult = DialogResult.Cancel, Left = 288, Top = 82, Width = 76 };
+        dialog.Controls.AddRange([prompt, input, save, cancel]);
+        dialog.AcceptButton = save;
+        dialog.CancelButton = cancel;
+        dialog.Shown += (_, _) => { input.Focus(); input.SelectAll(); };
+        return dialog.ShowDialog(this) == DialogResult.OK ? input.Text : null;
+    }
+
+    private void ShowError(string message) => MessageBox.Show(this, message, "エラー", MessageBoxButtons.OK, MessageBoxIcon.Error);
+}

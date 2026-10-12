@@ -1,0 +1,15 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Version>1.0.0</Version>
+    <Product>KidouRancher</Product>
+    <Description>Windows 11向けのフォルダー一括起動ツール</Description>
+    <Copyright>Copyright (c) 2026 studionori-coder</Copyright>
+  </PropertyGroup>
+
+</Project>

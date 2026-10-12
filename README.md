@@ -1,0 +1,47 @@
+# プロジェクトランチャー
+
+Windows 11向けのフォルダー一括起動ツールです。プロジェクトごとに複数のフォルダーを登録し、エクスプローラーで開けます。
+
+## ダウンロード（使うだけの方）
+
+1. [Releases](https://github.com/studionori-coder/kidou_rancher/releases/latest) から `KidouRancher-<バージョン>-win-x64.zip` をダウンロードします。
+2. 好きな場所に展開し、`KidouRancher.exe` をダブルクリックします。
+
+.NET のインストールは不要です（実行に必要なものはexeに含まれています）。
+
+初回起動時に「WindowsによってPCが保護されました」と表示された場合は、「詳細情報」→「実行」を選んでください（コード署名をしていないため表示されます）。
+
+## ソースから起動（開発者向け）
+
+エクスプローラーでリポジトリのルートにある `Run-KidouRancher.bat` をダブルクリックしてください。初回やソース更新後はビルドしてから起動します。`.NET 10 SDK` が必要です。
+
+コマンドから起動する場合:
+
+```powershell
+dotnet run --project src/KidouRancher/KidouRancher.csproj
+```
+
+## 設定
+
+設定は `%AppData%\KidouRancher\projects.json` に保存されます。画面右上の「書き出し」「読み込み」からJSON形式でバックアップできます。読み込み時は現在の設定を置き換える前に確認します。
+
+## エクスプローラーのタブ
+
+一括起動は、最初のフォルダーをエクスプローラーで開き、そのウィンドウを特定したうえで、ウィンドウへ直接「新しいタブ」コマンドを送り、作成されたタブをShell COM（`Navigate2`）で各フォルダーへ遷移させます。キーボード入力は使わないため、エクスプローラーが前面にあるか・最大化されているかに関係なく動作します。「新しいタブ」コマンドはエクスプローラーの非公開機能のため、Windowsの更新によって使えなくなる可能性があります。失敗した場合は、未起動のフォルダーを個別ウィンドウで開く選択肢が表示されます。
+
+## テスト
+
+```powershell
+dotnet test KidouRancher.slnx
+```
+
+## リリースの作り方
+
+GitHub Actions が配布用のzip（単一exe）を自動で作成し、Releasesに公開します。次のどちらかで実行します。
+
+- タグを push する: `git tag v1.0.0 && git push origin v1.0.0`
+- GitHubの「Actions」タブ →「Release」→「Run workflow」でバージョン（例: `1.0.0`）を入力して実行する
+
+## ライセンス
+
+[MIT License](LICENSE)
