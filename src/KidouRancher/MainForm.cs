@@ -237,32 +237,47 @@ public sealed class MainForm : Form
         e.SuppressKeyPress = true;
     }
 
-    private FlowLayoutPanel CreateProjectButtons()
+    private TableLayoutPanel CreateProjectButtons()
     {
-        var buttons = new FlowLayoutPanel
+        // 左ペインは幅が狭いため、ボタンを3列×2段の格子に並べて幅に合わせて伸縮させる
+        var buttons = new TableLayoutPanel
         {
-            Dock = DockStyle.Bottom,
-            Height = 78,
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = true,
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 2,
             Padding = new Padding(0, 5, 0, 0)
         };
-        buttons.Controls.Add(CreateButton("追加", (_, _) => AddProject()));
-        buttons.Controls.Add(CreateButton("名前変更", (_, _) => RenameProject()));
-        var deleteButton = CreateButton("削除", (_, _) => DeleteProject());
-        buttons.Controls.Add(deleteButton);
-        buttons.SetFlowBreak(deleteButton, true);
+        for (var column = 0; column < 3; column++)
+        {
+            buttons.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F / 3));
+        }
 
-        // 並び替えボタンは横幅の狭い左ペインに収まるよう2段目に置く
+        buttons.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+        buttons.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
+
         _moveProjectUpButton.Text = "上へ";
         _moveProjectUpButton.Click += (_, _) => MoveSelectedProject(-1);
+        ApplyButtonStyle(_moveProjectUpButton);
         _moveProjectDownButton.Text = "下へ";
         _moveProjectDownButton.Click += (_, _) => MoveSelectedProject(1);
-        foreach (var moveButton in new[] { _moveProjectUpButton, _moveProjectDownButton })
+        ApplyButtonStyle(_moveProjectDownButton);
+
+        Button[] cells =
+        [
+            CreateButton("追加", (_, _) => AddProject()),
+            CreateButton("名前変更", (_, _) => RenameProject()),
+            CreateButton("削除", (_, _) => DeleteProject()),
+            _moveProjectUpButton,
+            _moveProjectDownButton
+        ];
+        for (var index = 0; index < cells.Length; index++)
         {
-            ApplyButtonStyle(moveButton);
-            moveButton.Margin = new Padding(0, 6, 7, 0);
-            buttons.Controls.Add(moveButton);
+            var button = cells[index];
+            button.AutoSize = false;
+            button.Dock = DockStyle.Fill;
+            button.Padding = Padding.Empty;
+            button.Margin = new Padding(0, 0, index % 3 == 2 ? 0 : 6, 6);
+            buttons.Controls.Add(button, index % 3, index / 3);
         }
 
         return buttons;
