@@ -37,6 +37,8 @@ public sealed class MainForm : Form
     private readonly Label _folderHeading = new();
     private readonly Button _launchButton = new();
     private readonly ComboBox _launchScopeBox = new();
+    private readonly ToolTip _toolTip = new();
+    private readonly ContextMenuStrip _addItemMenu = new();
     private readonly Button _moveFolderUpButton = new();
     private readonly Button _moveFolderDownButton = new();
     private readonly Button _moveProjectUpButton = new();
@@ -76,6 +78,8 @@ public sealed class MainForm : Form
 
         BuildLayout();
         RefreshProjects(_preferencesStore.Load().LastSelectedProjectId);
+        // 起動直後から ↑↓ でプロジェクトを選び、Enter で一括起動できるようにする
+        ActiveControl = _projectList;
         FormClosing += (_, _) => SaveSelectedProject();
     }
 
@@ -200,6 +204,14 @@ public sealed class MainForm : Form
         _folderList.ShowItemToolTips = true;
         _folderList.ItemSelectionChanged += (_, e) => _folderList.Invalidate(e.Item?.Bounds ?? _folderList.ClientRectangle);
         _folderList.GotFocus += (_, _) => _folderList.Invalidate();
+        _folderList.Enter += (_, _) =>
+        {
+            // Tab などキーボードで入ったときだけ先頭を選ぶ（マウスのクリックはその行の選択に任せる）
+            if (MouseButtons == MouseButtons.None && _folderList.Items.Count > 0 && _folderList.SelectedIndices.Count == 0)
+            {
+                SelectFolderAt(0);
+            }
+        };
         _folderList.LostFocus += (_, _) => _folderList.Invalidate();
         _folderList.ContextMenuStrip = CreateFolderContextMenu();
         _folderList.KeyDown += OnFolderListKeyDown;
@@ -281,6 +293,15 @@ public sealed class MainForm : Form
             Margin = new Padding(0, 12, 6, 0),
             ForeColor = Color.FromArgb(64, 78, 88)
         });
+        footer.Controls.Add(new Label
+        {
+            Text = "F1: キー操作の一覧",
+            AutoSize = true,
+            Margin = new Padding(0, 12, 24, 0),
+            ForeColor = PendingColor
+        });
+        _toolTip.SetToolTip(_launchButton, "一括起動（Ctrl+Enter）");
+        _toolTip.SetToolTip(_launchScopeBox, "Alt+1〜Alt+5 で切り替え（すべて / フォルダー / ファイル / URL / 選択した項目）");
         root.Controls.Add(footer, 0, 2);
     }
 
@@ -337,6 +358,14 @@ public sealed class MainForm : Form
         {
             MoveSelectedFolder(e.KeyCode == Keys.Up ? -1 : 1);
         }
+        else if (e.Modifiers == Keys.None && e.KeyCode is Keys.Left or Keys.Escape)
+        {
+            _projectList.Focus();
+        }
+        else if (e.KeyCode == Keys.Insert)
+        {
+            ShowAddItemMenuInList();
+        }
         else
         {
             return;
@@ -348,14 +377,144 @@ public sealed class MainForm : Form
 
     private Button CreateAddItemButton()
     {
-        var menu = new ContextMenuStrip();
-        menu.Items.Add("フォルダー…", null, (_, _) => AddFolders());
-        menu.Items.Add("ファイル…", null, (_, _) => AddFiles());
-        menu.Items.Add("パス / URL を入力…", null, (_, _) => AddByInput());
+        _addItemMenu.Items.Add(new ToolStripMenuItem("フォルダー(&D)…", null, (_, _) => AddFolders()) { ShortcutKeyDisplayString = "Ctrl+D" });
+        _addItemMenu.Items.Add(new ToolStripMenuItem("ファイル(&O)…", null, (_, _) => AddFiles()) { ShortcutKeyDisplayString = "Ctrl+O" });
+        _addItemMenu.Items.Add(new ToolStripMenuItem("パス / URL を入力(&L)…", null, (_, _) => AddByInput()) { ShortcutKeyDisplayString = "Ctrl+L" });
 
         Button? button = null;
-        button = CreateButton("追加 ▾", (_, _) => menu.Show(button!, new Point(0, button!.Height)));
+        button = CreateButton("追加 ▾", (_, _) => _addItemMenu.Show(button!, new Point(0, button!.Height)));
+        _toolTip.SetToolTip(button, "追加（一覧で Insert、または Ctrl+D / Ctrl+O / Ctrl+L）");
         return button;
+    }
+
+    /// <summary>キーボード操作用：選択中の項目の下（無ければ一覧の左上）に「追加」メニューを出す。</summary>
+    private void ShowAddItemMenuInList()
+    {
+        if (SelectedProject is null)
+        {
+            return;
+        }
+
+        var anchor = _folderList.FocusedItem?.Bounds ?? Rectangle.Empty;
+        _addItemMenu.Show(_folderList, new Point(anchor.Left + 8, anchor.IsEmpty ? 24 : anchor.Bottom));
+        if (_addItemMenu.Items.Count > 0)
+        {
+            _addItemMenu.Items[0].Select();
+        }
+    }
+
+    /// <summary>
+    /// 画面のどこにフォーカスがあっても使えるショートカット。
+    /// 一覧ごとの操作（Enter・Delete・F2 など）は各一覧の KeyDown で扱う。
+    /// </summary>
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        switch (keyData)
+        {
+            case Keys.Control | Keys.Enter:
+                _ = LaunchProjectAsync();
+                return true;
+            case Keys.Control | Keys.N:
+                AddProject();
+                return true;
+            case Keys.Control | Keys.D:
+                AddFolders();
+                return true;
+            case Keys.Control | Keys.O:
+                AddFiles();
+                return true;
+            case Keys.Control | Keys.L:
+                AddByInput();
+                return true;
+            case Keys.F1:
+                ShowKeyboardHelp();
+                return true;
+            case Keys.F6:
+            case Keys.Shift | Keys.F6:
+                if (_folderList.ContainsFocus)
+                {
+                    _projectList.Focus();
+                }
+                else
+                {
+                    FocusFolderList();
+                }
+
+                return true;
+        }
+
+        // Ctrl+1〜9：N番目のプロジェクトへ移動、Alt+1〜5：起動する対象の切り替え
+        var key = keyData & Keys.KeyCode;
+        var modifiers = keyData & Keys.Modifiers;
+        if (key is >= Keys.D1 and <= Keys.D9)
+        {
+            var number = key - Keys.D1;
+            if (modifiers == Keys.Control && number < _projectList.Items.Count)
+            {
+                _projectList.SelectedIndex = number;
+                _projectList.Focus();
+                return true;
+            }
+
+            if (modifiers == Keys.Alt && number < _launchScopeBox.Items.Count)
+            {
+                _launchScopeBox.SelectedIndex = number;
+                return true;
+            }
+        }
+
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    /// <summary>右の一覧へフォーカスを移す。未選択なら先頭を選び、すぐに ↑↓ で動けるようにする。</summary>
+    private void FocusFolderList()
+    {
+        _folderList.Focus();
+        if (_folderList.Items.Count > 0 && _folderList.SelectedIndices.Count == 0)
+        {
+            SelectFolderAt(0);
+        }
+    }
+
+    private void SelectFolderAt(int index)
+    {
+        if (_folderList.Items.Count == 0)
+        {
+            return;
+        }
+
+        var item = _folderList.Items[Math.Clamp(index, 0, _folderList.Items.Count - 1)];
+        _folderList.SelectedItems.Clear();
+        item.Selected = true;
+        item.Focused = true;
+        item.EnsureVisible();
+    }
+
+    private void ShowKeyboardHelp()
+    {
+        const string help = """
+            【どこでも】
+              Ctrl+Enter　　一括起動
+              Alt+1〜5　　　起動する対象（すべて / フォルダー / ファイル / URL / 選択した項目）
+              Ctrl+1〜9　　 N 番目のプロジェクトへ移動
+              F6　　　　　　左右の一覧を切り替え
+              Ctrl+N　　　　新しいプロジェクト
+              Ctrl+D / Ctrl+O / Ctrl+L　フォルダー / ファイル / パス・URL を追加
+              F1　　　　　　この一覧
+
+            【プロジェクト一覧（左）】
+              ↑↓　　　　　選択　　　　Enter　一括起動　　→　右の一覧へ
+              F2　　　　　　名前変更　　Delete　削除
+              Ctrl+↑↓　　 並び替え
+
+            【起動項目一覧（右）】
+              ↑↓ / Shift+↑↓　選択 / 範囲選択　　Ctrl+A　すべて選択
+              Enter　　　　 選択した項目を起動　　← / Esc　左の一覧へ
+              Insert　　　　追加メニュー　　Ctrl+V　貼り付けて追加
+              Ctrl+C　　　　パス・URL をコピー　　Delete　削除
+              Ctrl+↑↓　　 並び替え　　F5　状態を再確認
+            """;
+        MessageBox.Show(this, help, "キー操作の一覧", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private ContextMenuStrip CreateProjectContextMenu()
@@ -377,7 +536,15 @@ public sealed class MainForm : Form
 
     private void OnProjectListKeyDown(object? sender, KeyEventArgs e)
     {
-        if (e.KeyCode == Keys.F2)
+        if (e.KeyCode == Keys.Enter && e.Modifiers == Keys.None)
+        {
+            _ = LaunchProjectAsync();
+        }
+        else if (e.KeyCode == Keys.Right && e.Modifiers == Keys.None)
+        {
+            FocusFolderList();
+        }
+        else if (e.KeyCode == Keys.F2)
         {
             RenameProject();
         }
@@ -924,6 +1091,7 @@ public sealed class MainForm : Form
         var project = new LauncherProject { Name = name };
         _settings.Projects.Add(project);
         SaveAndRefresh(project.Id);
+        _projectList.Focus();
     }
 
     private void RenameProject()
@@ -959,8 +1127,12 @@ public sealed class MainForm : Form
             return;
         }
 
+        // 削除後は同じ位置（末尾なら一つ上）のプロジェクトを選び、続けて操作できるようにする
+        var index = _settings.Projects.IndexOf(project);
         _settings.Projects.Remove(project);
-        SaveAndRefresh();
+        var neighbor = _settings.Projects.Count == 0 ? null : _settings.Projects[Math.Min(index, _settings.Projects.Count - 1)];
+        SaveAndRefresh(neighbor?.Id);
+        _projectList.Focus();
     }
 
     private void MoveSelectedProject(int direction)
@@ -1087,7 +1259,8 @@ public sealed class MainForm : Form
             return;
         }
 
-        foreach (var item in items.Where(item => !string.IsNullOrWhiteSpace(item)).Select(item => item.Trim()))
+        var requested = items.Where(item => !string.IsNullOrWhiteSpace(item)).Select(item => item.Trim()).ToArray();
+        foreach (var item in requested)
         {
             if (!project.Folders.Contains(item, StringComparer.OrdinalIgnoreCase))
             {
@@ -1095,7 +1268,9 @@ public sealed class MainForm : Form
             }
         }
 
-        SaveAndRefresh(project.Id);
+        // 追加した項目（登録済みだったものも）を選択して、続けて並び替えや起動ができるようにする
+        SaveAndRefresh(project.Id, requested);
+        _folderList.Focus();
     }
 
     private void RemoveFolders()
@@ -1107,8 +1282,13 @@ public sealed class MainForm : Form
         }
 
         var selectedPaths = _folderList.SelectedItems.Cast<ListViewItem>().Select(item => item.Text).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var firstIndex = _folderList.SelectedIndices.Cast<int>().Min();
         project.Folders.RemoveAll(folder => selectedPaths.Contains(folder));
         SaveAndRefresh(project.Id);
+
+        // 削除した位置の項目を選び、続けて Delete や ↑↓ で操作できるようにする
+        _folderList.Focus();
+        SelectFolderAt(firstIndex);
     }
 
     private string[] SelectedFolderPaths() =>
@@ -1363,7 +1543,11 @@ public sealed class MainForm : Form
                     selectedItem.Selected = true;
                 }
 
-                selectedItems.FirstOrDefault()?.EnsureVisible();
+                if (selectedItems.FirstOrDefault() is { } firstItem)
+                {
+                    firstItem.Focused = true;
+                    firstItem.EnsureVisible();
+                }
             }
         }
         catch (Exception exception)
