@@ -74,6 +74,10 @@ public sealed class MainForm : Form
     private bool _populatingFolders;
     private bool _suppressNextItemCheck;
 
+    // チェックの変化を保存するのは、利用者が操作したとき（チェックボックスのクリック・Space・メニュー）だけ。
+    // 一覧の作成中などに Windows から届く変化の通知を保存すると、勝手に「起動しない」になってしまうため
+    private bool _userTogglingCheck;
+
     public MainForm()
     {
         Text = "起動ランチャー";
@@ -254,8 +258,17 @@ public sealed class MainForm : Form
         _folderList.ItemCheck += OnFolderListItemCheck;
         _folderList.ItemChecked += OnFolderListItemChecked;
         // ListView はダブルクリックでもチェックが切り替わるが、ここではダブルクリック＝起動なので打ち消す
-        _folderList.MouseDown += (_, e) => _suppressNextItemCheck = e.Clicks > 1;
-        _folderList.MouseUp += (_, _) => _suppressNextItemCheck = false;
+        _folderList.MouseDown += (_, e) =>
+        {
+            _suppressNextItemCheck = e.Clicks > 1;
+            _userTogglingCheck = e.Button == MouseButtons.Left && e.Clicks == 1
+                && _folderList.HitTest(e.Location).Location == ListViewHitTestLocations.StateImage;
+        };
+        _folderList.MouseUp += (_, _) =>
+        {
+            _suppressNextItemCheck = false;
+            _userTogglingCheck = false;
+        };
         _folderList.OwnerDraw = true;
         _folderList.DrawColumnHeader += (_, e) => e.DrawDefault = true;
         _folderList.DrawSubItem += OnFolderListDrawSubItem;
@@ -1277,7 +1290,8 @@ public sealed class MainForm : Form
     private void OnFolderListItemChecked(object? sender, ItemCheckedEventArgs e)
     {
         var project = SelectedProject;
-        if (_populatingFolders || project is null || e.Item is null || string.IsNullOrEmpty(e.Item.Name))
+        if (!_userTogglingCheck || _populatingFolders || project is null || e.Item is null
+            || e.Item.ListView != _folderList || string.IsNullOrEmpty(e.Item.Name))
         {
             return;
         }
@@ -1312,9 +1326,17 @@ public sealed class MainForm : Form
         }
 
         var enable = items.Any(item => !item.Checked);
-        foreach (var item in items)
+        _userTogglingCheck = true;
+        try
         {
-            item.Checked = enable;
+            foreach (var item in items)
+            {
+                item.Checked = enable;
+            }
+        }
+        finally
+        {
+            _userTogglingCheck = false;
         }
     }
 
@@ -1487,7 +1509,8 @@ public sealed class MainForm : Form
             return;
         }
 
-        var items = _folderList.Items.Cast<ListViewItem>().ToArray();
+        // 一覧の更新中に呼ばれても落ちないよう、空の要素は数えない
+        var items = _folderList.Items.OfType<ListViewItem>().ToArray();
         var notes = new List<string>();
         var invalidCount = items.Count(item => item.Tag is TargetStatus { IsValid: false });
         var disabledCount = items.Count(item => !item.Checked);
