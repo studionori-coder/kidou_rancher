@@ -83,8 +83,10 @@ Write-Host "Saved $OutputPath ($width x $height)"
 Write-Host "Captured: '$([Win32]::TitleOf($target))'"
 
 # 起動に失敗したときの記録があれば出す（小さなウィンドウ＝エラーの画面を撮っていないかの確認用）
-$startupLog = Join-Path $env:LOCALAPPDATA 'KidouRancher\startup.log'
-if (Test-Path $startupLog) {
-    Write-Host '--- startup.log ---'
-    Get-Content $startupLog | Write-Host
+foreach ($name in 'startup.log', 'error.log') {
+    $log = Join-Path $env:LOCALAPPDATA "KidouRancher\$name"
+    if (Test-Path $log) {
+        Write-Host "--- $name ---"
+        Get-Content $log | Write-Host
+    }
 }
