@@ -1,6 +1,6 @@
 using KidouRancher.Models;
 using KidouRancher.Services;
-using System.Windows.Forms.VisualStyles;
+using CheckBoxState = System.Windows.Forms.VisualStyles.CheckBoxState;
 
 namespace KidouRancher;
 
