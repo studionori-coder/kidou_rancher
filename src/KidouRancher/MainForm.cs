@@ -9,6 +9,11 @@ public sealed class MainForm : Form
     private static readonly Color NormalColor = Color.FromArgb(44, 59, 68);
     private static readonly Color ValidColor = Color.FromArgb(28, 128, 76);
     private static readonly Color InvalidColor = Color.FromArgb(185, 73, 61);
+    private static readonly Color DropIndicatorColor = Color.FromArgb(28, 112, 93);
+
+    // 一覧内のドラッグ＆ドロップによる並び替えで使う、アプリ内専用のデータ形式
+    private const string ProjectDragFormat = "KidouRancher.ProjectReorder";
+    private const string ItemsDragFormat = "KidouRancher.ItemsReorder";
 
     private readonly ProjectStore _store = new();
     private readonly BackupService _backupService = new();
@@ -26,6 +31,10 @@ public sealed class MainForm : Form
     private bool _updatingSelection;
     private int _folderStatusVersion;
     private CancellationTokenSource? _statusCheckCancellation;
+    private int _projectDragStartIndex = -1;
+    private Point _projectDragStartPoint;
+    private int _projectDropIndex = -1;
+    private int _folderDropIndex = -1;
 
     public MainForm()
     {
@@ -130,6 +139,15 @@ public sealed class MainForm : Form
             UpdateProjectMoveButtons();
             RefreshFolders();
         };
+        _projectList.DoubleClick += (_, _) => RenameProject();
+        _projectList.KeyDown += OnProjectListKeyDown;
+        _projectList.ContextMenuStrip = CreateProjectContextMenu();
+        _projectList.AllowDrop = true;
+        _projectList.MouseDown += OnProjectListMouseDown;
+        _projectList.MouseMove += OnProjectListMouseMove;
+        _projectList.DragOver += OnProjectListDragOver;
+        _projectList.DragLeave += (_, _) => SetProjectDropIndex(-1);
+        _projectList.DragDrop += OnProjectListDragDrop;
         projectLayout.Controls.Add(_projectList, 0, 1);
         projectLayout.Controls.Add(CreateProjectButtons(), 0, 2);
 
@@ -158,8 +176,11 @@ public sealed class MainForm : Form
         _folderList.KeyDown += OnFolderListKeyDown;
         _folderList.DoubleClick += (_, _) => OpenSelectedItems();
         _folderList.AllowDrop = true;
-        _folderList.DragEnter += OnFolderListDragEnter;
+        _folderList.DragEnter += OnFolderListDragOver;
+        _folderList.DragOver += OnFolderListDragOver;
+        _folderList.DragLeave += (_, _) => SetFolderDropIndex(-1);
         _folderList.DragDrop += OnFolderListDragDrop;
+        _folderList.ItemDrag += OnFolderListItemDrag;
         _folderList.Columns.Add("フォルダー / ファイル / URL", 360);
         _folderList.Columns.Add("種類", 70);
         _folderList.Columns.Add("状態", 170);
@@ -253,6 +274,10 @@ public sealed class MainForm : Form
         {
             RefreshFolders();
         }
+        else if (e.Control && e.KeyCode is Keys.Up or Keys.Down)
+        {
+            MoveSelectedFolder(e.KeyCode == Keys.Up ? -1 : 1);
+        }
         else
         {
             return;
@@ -274,16 +299,188 @@ public sealed class MainForm : Form
         return button;
     }
 
-    private void OnFolderListDragEnter(object? sender, DragEventArgs e)
+    private ContextMenuStrip CreateProjectContextMenu()
     {
-        var canDrop = SelectedProject is not null
-            && e.Data is not null
-            && (e.Data.GetDataPresent(DataFormats.FileDrop) || e.Data.GetDataPresent(DataFormats.UnicodeText));
-        e.Effect = canDrop ? DragDropEffects.Copy : DragDropEffects.None;
+        var menu = new ContextMenuStrip();
+        var rename = new ToolStripMenuItem("名前変更", null, (_, _) => RenameProject()) { ShortcutKeyDisplayString = "F2" };
+        var up = new ToolStripMenuItem("上へ", null, (_, _) => MoveSelectedProject(-1)) { ShortcutKeyDisplayString = "Ctrl+↑" };
+        var down = new ToolStripMenuItem("下へ", null, (_, _) => MoveSelectedProject(1)) { ShortcutKeyDisplayString = "Ctrl+↓" };
+        var delete = new ToolStripMenuItem("削除", null, (_, _) => DeleteProject()) { ShortcutKeyDisplayString = "Delete" };
+        menu.Items.AddRange(new ToolStripItem[] { rename, up, down, new ToolStripSeparator(), delete });
+        menu.Opening += (_, e) =>
+        {
+            up.Enabled = _moveProjectUpButton.Enabled;
+            down.Enabled = _moveProjectDownButton.Enabled;
+            e.Cancel = SelectedProject is null;
+        };
+        return menu;
+    }
+
+    private void OnProjectListKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.KeyCode == Keys.F2)
+        {
+            RenameProject();
+        }
+        else if (e.KeyCode == Keys.Delete)
+        {
+            DeleteProject();
+        }
+        else if (e.Control && e.KeyCode is Keys.Up or Keys.Down)
+        {
+            MoveSelectedProject(e.KeyCode == Keys.Up ? -1 : 1);
+        }
+        else
+        {
+            return;
+        }
+
+        e.Handled = true;
+        e.SuppressKeyPress = true;
+    }
+
+    private void OnProjectListMouseDown(object? sender, MouseEventArgs e)
+    {
+        var index = _projectList.IndexFromPoint(e.Location);
+        // 右クリックでもその行を選択してから右クリックメニューを出す
+        if (e.Button == MouseButtons.Right && index != ListBox.NoMatches)
+        {
+            _projectList.SelectedIndex = index;
+        }
+
+        _projectDragStartIndex = e.Button == MouseButtons.Left ? index : -1;
+        _projectDragStartPoint = e.Location;
+    }
+
+    private void OnProjectListMouseMove(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left || _projectDragStartIndex < 0)
+        {
+            return;
+        }
+
+        // クリックのわずかなブレではドラッグを始めない
+        var dragSize = SystemInformation.DragSize;
+        var dragArea = new Rectangle(
+            _projectDragStartPoint.X - dragSize.Width / 2,
+            _projectDragStartPoint.Y - dragSize.Height / 2,
+            dragSize.Width,
+            dragSize.Height);
+        if (dragArea.Contains(e.Location))
+        {
+            return;
+        }
+
+        var index = _projectDragStartIndex;
+        _projectDragStartIndex = -1;
+        _projectList.DoDragDrop(new DataObject(ProjectDragFormat, index.ToString()), DragDropEffects.Move);
+        SetProjectDropIndex(-1);
+    }
+
+    private void OnProjectListDragOver(object? sender, DragEventArgs e)
+    {
+        if (e.Data?.GetDataPresent(ProjectDragFormat) != true)
+        {
+            e.Effect = DragDropEffects.None;
+            return;
+        }
+
+        e.Effect = DragDropEffects.Move;
+        SetProjectDropIndex(GetProjectInsertionIndex(_projectList.PointToClient(new Point(e.X, e.Y))));
+    }
+
+    private void OnProjectListDragDrop(object? sender, DragEventArgs e)
+    {
+        SetProjectDropIndex(-1);
+        if (!int.TryParse(e.Data?.GetData(ProjectDragFormat) as string, out var fromIndex)
+            || fromIndex < 0
+            || fromIndex >= _settings.Projects.Count)
+        {
+            return;
+        }
+
+        var project = _settings.Projects[fromIndex];
+        var insertIndex = GetProjectInsertionIndex(_projectList.PointToClient(new Point(e.X, e.Y)));
+        ListReorder.Move(_settings.Projects, [fromIndex], insertIndex);
+        SaveAndRefresh(project.Id);
+    }
+
+    /// <summary>マウス位置から、ドロップしたときの挿入位置（0〜項目数）を求める。行の下半分なら次の行の前に入れる。</summary>
+    private int GetProjectInsertionIndex(Point point)
+    {
+        var count = _projectList.Items.Count;
+        if (count == 0)
+        {
+            return 0;
+        }
+
+        var index = _projectList.IndexFromPoint(point);
+        if (index == ListBox.NoMatches)
+        {
+            return point.Y < _projectList.GetItemRectangle(0).Top ? 0 : count;
+        }
+
+        var bounds = _projectList.GetItemRectangle(index);
+        return point.Y >= bounds.Top + bounds.Height / 2 ? index + 1 : index;
+    }
+
+    private void SetProjectDropIndex(int index)
+    {
+        if (index == _projectDropIndex)
+        {
+            return;
+        }
+
+        _projectDropIndex = index;
+        var count = _projectList.Items.Count;
+        int? y = index < 0 || count == 0
+            ? null
+            : index < count ? _projectList.GetItemRectangle(index).Top : _projectList.GetItemRectangle(count - 1).Bottom - 1;
+        DrawDropIndicator(_projectList, y);
+    }
+
+    private void OnFolderListItemDrag(object? sender, ItemDragEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left || SelectedProject is null || _folderList.SelectedIndices.Count == 0)
+        {
+            return;
+        }
+
+        var indices = string.Join(",", _folderList.SelectedIndices.Cast<int>());
+        _folderList.DoDragDrop(new DataObject(ItemsDragFormat, indices), DragDropEffects.Move);
+        SetFolderDropIndex(-1);
+    }
+
+    private void OnFolderListDragOver(object? sender, DragEventArgs e)
+    {
+        if (SelectedProject is null || e.Data is null)
+        {
+            e.Effect = DragDropEffects.None;
+            return;
+        }
+
+        // 一覧内での並び替え
+        if (e.Data.GetDataPresent(ItemsDragFormat))
+        {
+            e.Effect = DragDropEffects.Move;
+            SetFolderDropIndex(GetFolderInsertionIndex(_folderList.PointToClient(new Point(e.X, e.Y))));
+            return;
+        }
+
+        // エクスプローラーやブラウザーからの追加
+        var canAdd = e.Data.GetDataPresent(DataFormats.FileDrop) || e.Data.GetDataPresent(DataFormats.UnicodeText);
+        e.Effect = canAdd ? DragDropEffects.Copy : DragDropEffects.None;
     }
 
     private void OnFolderListDragDrop(object? sender, DragEventArgs e)
     {
+        SetFolderDropIndex(-1);
+        if (e.Data?.GetData(ItemsDragFormat) is string indicesText)
+        {
+            MoveDraggedFolders(indicesText, GetFolderInsertionIndex(_folderList.PointToClient(new Point(e.X, e.Y))));
+            return;
+        }
+
         // エクスプローラーからはファイル・フォルダー、ブラウザー等からはURLやパスの文字列がドロップされる
         if (e.Data?.GetData(DataFormats.FileDrop) is string[] paths)
         {
@@ -300,6 +497,78 @@ public sealed class MainForm : Form
 
             AddItems(items);
         }
+    }
+
+    private void MoveDraggedFolders(string indicesText, int insertIndex)
+    {
+        var project = SelectedProject;
+        if (project is null)
+        {
+            return;
+        }
+
+        var indices = indicesText.Split(',')
+            .Select(text => int.TryParse(text, out var index) ? index : -1)
+            .Where(index => index >= 0 && index < project.Folders.Count)
+            .ToArray();
+        if (indices.Length == 0)
+        {
+            return;
+        }
+
+        var movedPaths = indices.Select(index => project.Folders[index]).ToArray();
+        ListReorder.Move(project.Folders, indices, insertIndex);
+        SaveAndRefresh(project.Id, movedPaths);
+    }
+
+    private int GetFolderInsertionIndex(Point point)
+    {
+        var count = _folderList.Items.Count;
+        if (count == 0)
+        {
+            return 0;
+        }
+
+        var item = _folderList.GetItemAt(Math.Max(point.X, 1), point.Y);
+        if (item is null)
+        {
+            // 最後の行より下なら末尾、それ以外（見出し付近など）は表示中の先頭行の前
+            return point.Y >= _folderList.Items[count - 1].Bounds.Bottom ? count : _folderList.TopItem?.Index ?? 0;
+        }
+
+        var bounds = item.Bounds;
+        return point.Y >= bounds.Top + bounds.Height / 2 ? item.Index + 1 : item.Index;
+    }
+
+    private void SetFolderDropIndex(int index)
+    {
+        if (index == _folderDropIndex)
+        {
+            return;
+        }
+
+        _folderDropIndex = index;
+        var count = _folderList.Items.Count;
+        int? y = index < 0 || count == 0
+            ? null
+            : index < count ? _folderList.Items[index].Bounds.Top : _folderList.Items[count - 1].Bounds.Bottom - 1;
+        DrawDropIndicator(_folderList, y);
+    }
+
+    /// <summary>ドロップ先を示す線を描く（y が null なら消す）。一時的な描画なので、再描画で消える。</summary>
+    private static void DrawDropIndicator(Control control, int? y)
+    {
+        control.Invalidate();
+        control.Update();
+        if (y is null)
+        {
+            return;
+        }
+
+        var lineY = Math.Clamp(y.Value, 1, Math.Max(1, control.ClientSize.Height - 2));
+        using var graphics = control.CreateGraphics();
+        using var pen = new Pen(DropIndicatorColor, 2);
+        graphics.DrawLine(pen, 0, lineY, control.ClientSize.Width, lineY);
     }
 
     private TableLayoutPanel CreateProjectButtons()
@@ -798,7 +1067,7 @@ public sealed class MainForm : Form
         }
 
         (project.Folders[currentIndex], project.Folders[targetIndex]) = (project.Folders[targetIndex], project.Folders[currentIndex]);
-        SaveAndRefresh(project.Id, project.Folders[targetIndex]);
+        SaveAndRefresh(project.Id, [project.Folders[targetIndex]]);
     }
 
     private async Task LaunchSelectedAsync()
@@ -920,21 +1189,23 @@ public sealed class MainForm : Form
         }
     }
 
-    private void SaveAndRefresh(Guid? selectedProjectId = null, string? selectedFolderPath = null)
+    private void SaveAndRefresh(Guid? selectedProjectId = null, IReadOnlyCollection<string>? selectedFolderPaths = null)
     {
         try
         {
             _store.Save(_settings);
             RefreshProjects(selectedProjectId);
-            if (selectedFolderPath is not null)
+            if (selectedFolderPaths is { Count: > 0 })
             {
-                var selectedItem = _folderList.Items.Cast<ListViewItem>().FirstOrDefault(item =>
-                    string.Equals(item.Text, selectedFolderPath, StringComparison.OrdinalIgnoreCase));
-                if (selectedItem is not null)
+                var selectedItems = _folderList.Items.Cast<ListViewItem>()
+                    .Where(item => selectedFolderPaths.Contains(item.Text, StringComparer.OrdinalIgnoreCase))
+                    .ToArray();
+                foreach (var selectedItem in selectedItems)
                 {
                     selectedItem.Selected = true;
-                    selectedItem.EnsureVisible();
                 }
+
+                selectedItems.FirstOrDefault()?.EnsureVisible();
             }
         }
         catch (Exception exception)
