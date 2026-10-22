@@ -62,6 +62,11 @@ public sealed class LaunchTargetTests
     [DataRow("C:/work/web", @"C:\work\web")]
     [DataRow("file://fileserver/share/a.txt", @"\\fileserver\share\a.txt")]
     [DataRow("file:///C:/work/a%20b.txt", @"C:\work\a b.txt")]
+    [DataRow(@"\\192.168.1.10\share\資料", @"\\192.168.1.10\share\資料")]
+    [DataRow("//192.168.1.10/share/資料", @"\\192.168.1.10\share\資料")]
+    [DataRow("smb://192.168.1.10/share/資料", @"\\192.168.1.10\share\資料")]
+    [DataRow("smb://fileserver/share/%E8%B3%87%E6%96%99/", @"\\fileserver\share\資料")]
+    [DataRow("file://192.168.1.10/share/a.txt", @"\\192.168.1.10\share\a.txt")]
     [DataRow("https://example.com", "https://example.com")]
     [DataRow("example.com", "https://example.com")]
     public void NormalizeInput_AcceptsPathsInVariousNotations(string input, string expected) =>
@@ -78,6 +83,8 @@ public sealed class LaunchTargetTests
     [TestMethod]
     [DataRow(@"\\fileserver\share\資料")]
     [DataRow(@"\\fileserver\share\見積.xlsx")]
+    [DataRow(@"\\192.168.1.10\share\資料")]
+    [DataRow(@"\\192.168.1.10\share\見積.xlsx")]
     public void IsUrl_RejectsFileServerPaths(string value) => Assert.IsFalse(LaunchTarget.IsUrl(value));
 
     private static readonly (string Path, LaunchTargetKind Kind)[] PlanTargets =

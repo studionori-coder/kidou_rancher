@@ -73,7 +73,7 @@ public static class LaunchTarget
 
     /// <summary>
     /// 入力・貼り付けされたパスまたはURLを登録用に整える。
-    /// 前後の引用符（エクスプローラーの「パスのコピー」）を外し、file:// や / 区切りの表記は Windows のパスに直す。
+    /// 前後の引用符（エクスプローラーの「パスのコピー」）を外し、file:// や smb://、/ 区切りの表記は Windows のパスに直す。
     /// completeUrlScheme が true のときは、スキームの無い入力を https:// のURLとして扱う。
     /// </summary>
     public static string? NormalizeInput(string input, bool completeUrlScheme = true)
@@ -82,6 +82,13 @@ public static class LaunchTarget
         if (value.Length == 0)
         {
             return null;
+        }
+
+        // smb://server/share（Mac などの表記）はファイルサーバーのパス \\server\share に直す。IPアドレスでも同じ
+        if (value.StartsWith("smb://", StringComparison.OrdinalIgnoreCase))
+        {
+            var rest = Uri.UnescapeDataString(value["smb://".Length..]).Replace('/', '\\').TrimEnd('\\');
+            return rest.Length == 0 ? null : @"\\" + rest;
         }
 
         if (value.StartsWith("file:", StringComparison.OrdinalIgnoreCase))
