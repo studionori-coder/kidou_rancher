@@ -1497,7 +1497,18 @@ public sealed class MainForm : Form
         var otherColumnsWidth = _folderList.Columns[KindColumn].Width + _folderList.Columns[StatusColumn].Width + _folderList.Columns[TitleColumn].Width;
         // 項目が増えて縦スクロールバーが出ても横スクロールバーが出ないよう、その幅を常に空けておく
         var available = _folderList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - otherColumnsWidth - 4;
-        _folderList.Columns[PathColumn].Width = Math.Max(160, available);
+        const int minPathWidth = 160;
+        const int minTitleWidth = 80;
+        if (available < minPathWidth)
+        {
+            // 画面が狭いときは表題の列を縮めて、横スクロールバーを出さずにパスの列を確保する
+            var title = _folderList.Columns[TitleColumn];
+            var shrink = Math.Min(minPathWidth - available, Math.Max(0, title.Width - minTitleWidth));
+            title.Width -= shrink;
+            available += shrink;
+        }
+
+        _folderList.Columns[PathColumn].Width = Math.Max(minPathWidth, available);
     }
 
     private void UpdateFolderHeading()
