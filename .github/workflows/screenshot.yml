@@ -32,3 +32,14 @@ jobs:
         with:
           name: screenshot
           path: screenshot.png
+
+      # 成果物をダウンロードできない環境からも確認できるよう、ログにも Base64 で出力する
+      - name: Print screenshot as Base64
+        shell: pwsh
+        run: |
+          $base64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes("$PWD/screenshot.png"))
+          Write-Host 'SCREENSHOT-BASE64-BEGIN'
+          for ($i = 0; $i -lt $base64.Length; $i += 1000) {
+            Write-Host ('B64:' + $base64.Substring($i, [Math]::Min(1000, $base64.Length - $i)))
+          }
+          Write-Host 'SCREENSHOT-BASE64-END'
