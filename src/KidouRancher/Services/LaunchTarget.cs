@@ -13,6 +13,14 @@ public enum LaunchTargetKind
 /// <summary>
 /// 登録項目（フォルダー・ファイルのパス、またはURL）の種類を判定し、既定のアプリで開く。
 /// </summary>
+public sealed record LaunchPlan(
+    IReadOnlyList<string> Folders,
+    IReadOnlyList<(string Path, LaunchTargetKind Kind)> Others,
+    IReadOnlyList<string> Missing)
+{
+    public bool IsEmpty => Folders.Count == 0 && Others.Count == 0;
+}
+
 public static class LaunchTarget
 {
     public static bool IsUrl(string value)
@@ -92,6 +100,38 @@ public static class LaunchTarget
         }
 
         return completeUrlScheme ? NormalizeUrl(value) : null;
+    }
+
+    /// <summary>
+    /// 判定済みの項目を起動用に振り分ける。kind を指定するとその種類だけを対象にする（null ならすべて）。
+    /// フォルダーはタブでまとめて開くため別にし、見つからない項目は Missing に分ける。並び順は保つ。
+    /// </summary>
+    public static LaunchPlan Plan(IEnumerable<(string Path, LaunchTargetKind Kind)> targets, LaunchTargetKind? kind = null)
+    {
+        var folders = new List<string>();
+        var others = new List<(string Path, LaunchTargetKind Kind)>();
+        var missing = new List<string>();
+        foreach (var (path, targetKind) in targets)
+        {
+            if (targetKind == LaunchTargetKind.Missing)
+            {
+                missing.Add(path);
+            }
+            else if (kind is not null && targetKind != kind)
+            {
+                continue;
+            }
+            else if (targetKind == LaunchTargetKind.Folder)
+            {
+                folders.Add(path);
+            }
+            else
+            {
+                others.Add((path, targetKind));
+            }
+        }
+
+        return new LaunchPlan(folders, others, missing);
     }
 
     public static string DisplayName(LaunchTargetKind kind) => kind switch

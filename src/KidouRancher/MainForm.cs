@@ -5,6 +5,18 @@ namespace KidouRancher;
 
 public sealed class MainForm : Form
 {
+    /// <summary>「起動する対象」の選択肢。並びはコンボボックスの表示順と一致させる。</summary>
+    private enum LaunchScope
+    {
+        All,
+        Folders,
+        Files,
+        Urls,
+        Selected
+    }
+
+    private static readonly string[] LaunchScopeLabels = ["すべて", "フォルダーだけ", "ファイルだけ", "URLだけ", "選択した項目だけ"];
+
     private static readonly Color PendingColor = Color.FromArgb(120, 132, 140);
     private static readonly Color NormalColor = Color.FromArgb(44, 59, 68);
     private static readonly Color ValidColor = Color.FromArgb(28, 128, 76);
@@ -23,6 +35,7 @@ public sealed class MainForm : Form
     private readonly ListView _folderList = new();
     private readonly Label _folderHeading = new();
     private readonly Button _launchButton = new();
+    private readonly ComboBox _launchScopeBox = new();
     private readonly Button _moveFolderUpButton = new();
     private readonly Button _moveFolderDownButton = new();
     private readonly Button _moveProjectUpButton = new();
@@ -223,8 +236,24 @@ public sealed class MainForm : Form
         _launchButton.BackColor = Color.FromArgb(28, 112, 93);
         _launchButton.ForeColor = Color.White;
         _launchButton.Font = new Font("Yu Gothic UI", 10F, FontStyle.Bold);
-        _launchButton.Click += async (_, _) => await LaunchSelectedAsync();
+        _launchButton.Click += async (_, _) => await LaunchProjectAsync();
         footer.Controls.Add(_launchButton);
+
+        // 一括起動の対象（すべて／種類別／一覧で選択した項目だけ）
+        _launchScopeBox.DropDownStyle = ComboBoxStyle.DropDownList;
+        _launchScopeBox.Width = 150;
+        _launchScopeBox.Font = new Font("Yu Gothic UI", 10F);
+        _launchScopeBox.Margin = new Padding(0, 8, 10, 0);
+        _launchScopeBox.Items.AddRange(LaunchScopeLabels);
+        _launchScopeBox.SelectedIndex = (int)LaunchScope.All;
+        footer.Controls.Add(_launchScopeBox);
+        footer.Controls.Add(new Label
+        {
+            Text = "起動する対象",
+            AutoSize = true,
+            Margin = new Padding(0, 12, 6, 0),
+            ForeColor = Color.FromArgb(64, 78, 88)
+        });
         root.Controls.Add(footer, 0, 2);
     }
 
@@ -233,7 +262,7 @@ public sealed class MainForm : Form
         var menu = new ContextMenuStrip();
         var copy = new ToolStripMenuItem("パス / URL をコピー", null, (_, _) => CopySelectedFolderPaths()) { ShortcutKeyDisplayString = "Ctrl+C" };
         var paste = new ToolStripMenuItem("貼り付けて追加", null, (_, _) => PasteItems()) { ShortcutKeyDisplayString = "Ctrl+V" };
-        var open = new ToolStripMenuItem("開く", null, (_, _) => OpenSelectedItems()) { ShortcutKeyDisplayString = "Enter" };
+        var open = new ToolStripMenuItem("選択した項目を起動", null, (_, _) => OpenSelectedItems()) { ShortcutKeyDisplayString = "Enter" };
         var recheck = new ToolStripMenuItem("状態を再確認", null, (_, _) => RefreshFolders()) { ShortcutKeyDisplayString = "F5" };
         var delete = new ToolStripMenuItem("削除", null, (_, _) => RemoveFolders()) { ShortcutKeyDisplayString = "Delete" };
         menu.Items.AddRange(new ToolStripItem[] { copy, paste, open, recheck, new ToolStripSeparator(), delete });
@@ -1042,18 +1071,13 @@ public sealed class MainForm : Form
         }
     }
 
+    /// <summary>一覧で選択した項目を起動する（Enter・ダブルクリック・右クリックメニュー）。</summary>
     private void OpenSelectedItems()
     {
         var paths = SelectedFolderPaths();
-        if (paths.Length == 0)
+        if (paths.Length > 0)
         {
-            return;
-        }
-
-        var errors = OpenItems(paths.Select(path => (path, LaunchTarget.Classify(path))).ToArray());
-        if (errors.Count > 0)
-        {
-            ShowError(string.Join(Environment.NewLine, errors));
+            _ = LaunchItemsAsync(paths, kind: null, reportMissing: true);
         }
     }
 
@@ -1101,7 +1125,8 @@ public sealed class MainForm : Form
         SaveAndRefresh(project.Id, [project.Folders[targetIndex]]);
     }
 
-    private async Task LaunchSelectedAsync()
+    /// <summary>「▶ 一括起動」：「起動する対象」で選んだ範囲を起動する。</summary>
+    private async Task LaunchProjectAsync()
     {
         var project = SelectedProject;
         if (project is null)
@@ -1109,23 +1134,58 @@ public sealed class MainForm : Form
             return;
         }
 
+        var scope = (LaunchScope)Math.Max(0, _launchScopeBox.SelectedIndex);
+        if (scope == LaunchScope.Selected)
+        {
+            var selected = SelectedFolderPaths();
+            if (selected.Length == 0)
+            {
+                MessageBox.Show(this, "起動する項目を一覧で選択してください。", "一括起動", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            await LaunchItemsAsync(selected, kind: null, reportMissing: true);
+            return;
+        }
+
+        LaunchTargetKind? kind = scope switch
+        {
+            LaunchScope.Folders => LaunchTargetKind.Folder,
+            LaunchScope.Files => LaunchTargetKind.File,
+            LaunchScope.Urls => LaunchTargetKind.Url,
+            _ => null
+        };
+        await LaunchItemsAsync(project.Folders.ToArray(), kind, reportMissing: false);
+    }
+
+    /// <summary>
+    /// 項目を起動する。フォルダーはエクスプローラーの1ウィンドウにタブでまとめて開き、続いてファイルとURLを順に開く。
+    /// kind を指定するとその種類だけを起動する。reportMissing が true なら、見つからない項目も最後に知らせる。
+    /// </summary>
+    private async Task LaunchItemsAsync(string[] items, LaunchTargetKind? kind, bool reportMissing)
+    {
+        if (!_launchButton.Enabled)
+        {
+            // 起動処理の実行中は重ねて起動しない
+            return;
+        }
+
         _launchButton.Enabled = false;
         try
         {
             // 存在確認はスリープ中のドライブやファイルサーバーで時間がかかることがあるため、UIスレッド外で並行して行う
-            var items = project.Folders.ToArray();
             var targets = await Task.Run(() => items.AsParallel().AsOrdered().Select(item => (Path: item, Kind: LaunchTarget.Classify(item))).ToArray());
-            var folders = targets.Where(target => target.Kind == LaunchTargetKind.Folder).Select(target => target.Path).ToArray();
-            var others = targets.Where(target => target.Kind is LaunchTargetKind.File or LaunchTargetKind.Url).ToArray();
-            if (folders.Length == 0 && others.Length == 0)
+            var plan = LaunchTarget.Plan(targets, kind);
+            if (plan.IsEmpty)
             {
-                MessageBox.Show(this, "起動できる項目が見つかりません。パスやURLを確認してください。", "一括起動", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                var what = kind is null ? "項目" : LaunchTarget.DisplayName(kind.Value);
+                MessageBox.Show(this, $"起動できる{what}が見つかりません。パスやURLを確認してください。", "一括起動", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
-            // フォルダーをエクスプローラーのタブで開いてから、ファイルとURLを順に開く（見つからない項目はスキップ）
-            if (folders.Length > 0)
+            if (plan.Folders.Count > 0)
             {
+                var folders = plan.Folders.ToArray();
                 var result = await _launcher.OpenFoldersAsync(folders, CancellationToken.None);
                 if (!result.Success)
                 {
@@ -1145,7 +1205,12 @@ public sealed class MainForm : Form
                 }
             }
 
-            var errors = OpenItems(others);
+            var errors = OpenItems(plan.Others);
+            if (reportMissing)
+            {
+                errors.InsertRange(0, plan.Missing.Select(path => $"見つかりません: {path}"));
+            }
+
             if (errors.Count > 0)
             {
                 MessageBox.Show(this, string.Join(Environment.NewLine, errors), "一括起動", MessageBoxButtons.OK, MessageBoxIcon.Warning);

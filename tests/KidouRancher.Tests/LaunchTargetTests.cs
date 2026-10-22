@@ -79,4 +79,45 @@ public sealed class LaunchTargetTests
     [DataRow(@"\\fileserver\share\資料")]
     [DataRow(@"\\fileserver\share\見積.xlsx")]
     public void IsUrl_RejectsFileServerPaths(string value) => Assert.IsFalse(LaunchTarget.IsUrl(value));
+
+    private static readonly (string Path, LaunchTargetKind Kind)[] PlanTargets =
+    [
+        (@"C:\work", LaunchTargetKind.Folder),
+        ("https://example.com", LaunchTargetKind.Url),
+        (@"C:\work\memo.txt", LaunchTargetKind.File),
+        (@"D:\missing", LaunchTargetKind.Missing),
+        (@"C:\docs", LaunchTargetKind.Folder)
+    ];
+
+    [TestMethod]
+    public void Plan_WithoutKindLaunchesEverythingInOrder()
+    {
+        var plan = LaunchTarget.Plan(PlanTargets);
+
+        CollectionAssert.AreEqual(new[] { @"C:\work", @"C:\docs" }, plan.Folders.ToArray());
+        CollectionAssert.AreEqual(new[] { "https://example.com", @"C:\work\memo.txt" }, plan.Others.Select(other => other.Path).ToArray());
+        CollectionAssert.AreEqual(new[] { @"D:\missing" }, plan.Missing.ToArray());
+        Assert.IsFalse(plan.IsEmpty);
+    }
+
+    [TestMethod]
+    [DataRow(LaunchTargetKind.Folder, 2, 0)]
+    [DataRow(LaunchTargetKind.File, 0, 1)]
+    [DataRow(LaunchTargetKind.Url, 0, 1)]
+    public void Plan_WithKindLaunchesOnlyThatKind(LaunchTargetKind kind, int folderCount, int otherCount)
+    {
+        var plan = LaunchTarget.Plan(PlanTargets, kind);
+
+        Assert.AreEqual(folderCount, plan.Folders.Count);
+        Assert.AreEqual(otherCount, plan.Others.Count);
+        Assert.IsTrue(plan.Others.All(other => other.Kind == kind));
+    }
+
+    [TestMethod]
+    public void Plan_IsEmptyWhenNothingMatches()
+    {
+        var plan = LaunchTarget.Plan([(@"C:\work", LaunchTargetKind.Folder)], LaunchTargetKind.Url);
+
+        Assert.IsTrue(plan.IsEmpty);
+    }
 }
