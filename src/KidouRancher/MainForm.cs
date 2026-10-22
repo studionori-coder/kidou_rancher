@@ -23,11 +23,12 @@ public sealed class MainForm : Form
     private static readonly Color InvalidColor = Color.FromArgb(185, 73, 61);
     private static readonly Color DropIndicatorColor = Color.FromArgb(28, 112, 93);
 
-    // 起動項目一覧の列。表題は後から追加した列のため末尾に置き、DisplayIndex で一番左に表示する
-    private const int PathColumn = 0;
-    private const int KindColumn = 1;
-    private const int StatusColumn = 2;
-    private const int TitleColumn = 3;
+    // 起動項目一覧の列（表示順どおり）。各行のパス・URLは item.Name に持つ。
+    // DisplayIndex で列の表示順を入れ替えると、オーナードロー時に先頭列のセル位置が正しく渡されないため使わない
+    private const int TitleColumn = 0;
+    private const int PathColumn = 1;
+    private const int KindColumn = 2;
+    private const int StatusColumn = 3;
 
     // 一覧内のドラッグ＆ドロップによる並び替えで使う、アプリ内専用のデータ形式
     private const string ProjectDragFormat = "KidouRancher.ProjectReorder";
@@ -229,11 +230,10 @@ public sealed class MainForm : Form
         _folderList.DragLeave += (_, _) => SetFolderDropIndex(-1);
         _folderList.DragDrop += OnFolderListDragDrop;
         _folderList.ItemDrag += OnFolderListItemDrag;
+        _folderList.Columns.Add("表題", 140);
         _folderList.Columns.Add("フォルダー / ファイル / URL", 300);
         _folderList.Columns.Add("種類", 80);
         _folderList.Columns.Add("状態", 200);
-        _folderList.Columns.Add("表題", 140);
-        _folderList.Columns[TitleColumn].DisplayIndex = 0;
         // パスの列を残りの幅いっぱいに広げ、状態の列が切れたり横スクロールが出たりしないようにする
         _folderList.ClientSizeChanged += (_, _) => FitFolderColumns();
         folderLayout.Controls.Add(_folderList, 0, 1);
@@ -949,10 +949,10 @@ public sealed class MainForm : Form
             foreach (var folder in project.Folders)
             {
                 // 有効かどうかの確認は非同期で行い、結果が出るまでは「確認中」と表示する
-                var item = new ListViewItem(folder) { ForeColor = PendingColor, UseItemStyleForSubItems = false };
+                var item = new ListViewItem(project.GetTitle(folder)) { Name = folder, ForeColor = PendingColor, UseItemStyleForSubItems = false };
+                item.SubItems.Add(folder, PendingColor, item.BackColor, item.Font);
                 item.SubItems.Add(LaunchTarget.IsUrl(folder) ? LaunchTarget.DisplayName(LaunchTargetKind.Url) : string.Empty, PendingColor, item.BackColor, item.Font);
                 item.SubItems.Add("確認中…", PendingColor, item.BackColor, item.Font);
-                item.SubItems.Add(project.GetTitle(folder), PendingColor, item.BackColor, item.Font);
                 item.ToolTipText = BuildItemToolTip(item, folder);
                 _folderList.Items.Add(item);
             }
@@ -1001,7 +1001,7 @@ public sealed class MainForm : Form
         }
 
         var item = _folderList.Items[index];
-        if (!string.Equals(item.Text, folder, StringComparison.Ordinal))
+        if (!string.Equals(item.Name, folder, StringComparison.Ordinal))
         {
             return;
         }
@@ -1114,7 +1114,7 @@ public sealed class MainForm : Form
             return;
         }
 
-        var path = _folderList.SelectedItems[0].Text;
+        var path = _folderList.SelectedItems[0].Name;
         var input = PromptForName("表題の変更", "表題（空欄にすると表題なし）", project.GetTitle(path));
         if (input is null)
         {
@@ -1128,13 +1128,15 @@ public sealed class MainForm : Form
 
     private void FitFolderColumns()
     {
-        if (_folderList.Columns.Count <= TitleColumn)
+        if (_folderList.Columns.Count <= StatusColumn)
         {
             return;
         }
 
         var otherColumnsWidth = _folderList.Columns[KindColumn].Width + _folderList.Columns[StatusColumn].Width + _folderList.Columns[TitleColumn].Width;
-        _folderList.Columns[PathColumn].Width = Math.Max(160, _folderList.ClientSize.Width - otherColumnsWidth - 4);
+        // 項目が増えて縦スクロールバーが出ても横スクロールバーが出ないよう、その幅を常に空けておく
+        var available = _folderList.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - otherColumnsWidth - 4;
+        _folderList.Columns[PathColumn].Width = Math.Max(160, available);
     }
 
     private void UpdateFolderHeading()
@@ -1383,7 +1385,7 @@ public sealed class MainForm : Form
             return;
         }
 
-        var selectedPaths = _folderList.SelectedItems.Cast<ListViewItem>().Select(item => item.Text).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var selectedPaths = _folderList.SelectedItems.Cast<ListViewItem>().Select(item => item.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var firstIndex = _folderList.SelectedIndices.Cast<int>().Min();
         project.Folders.RemoveAll(folder => selectedPaths.Contains(folder));
         project.RemoveUnusedTitles();
@@ -1395,7 +1397,7 @@ public sealed class MainForm : Form
     }
 
     private string[] SelectedFolderPaths() =>
-        _folderList.SelectedItems.Cast<ListViewItem>().Select(item => item.Text).ToArray();
+        _folderList.SelectedItems.Cast<ListViewItem>().Select(item => item.Name).ToArray();
 
     private void CopySelectedFolderPaths()
     {
@@ -1639,7 +1641,7 @@ public sealed class MainForm : Form
             if (selectedFolderPaths is { Count: > 0 })
             {
                 var selectedItems = _folderList.Items.Cast<ListViewItem>()
-                    .Where(item => selectedFolderPaths.Contains(item.Text, StringComparer.OrdinalIgnoreCase))
+                    .Where(item => selectedFolderPaths.Contains(item.Name, StringComparer.OrdinalIgnoreCase))
                     .ToArray();
                 foreach (var selectedItem in selectedItems)
                 {
