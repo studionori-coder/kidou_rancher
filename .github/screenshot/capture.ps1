@@ -29,6 +29,13 @@ public static class Win32 {
         return result;
     }
     public static string TitleOf(IntPtr hWnd) { var b = new System.Text.StringBuilder(256); GetWindowText(hWnd, b, 256); return b.ToString(); }
+    [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent, EnumWindowsProc callback, IntPtr lParam);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, System.Text.StringBuilder lParam);
+    public static System.Collections.Generic.List<string> ChildTexts(IntPtr parent) {
+        var result = new System.Collections.Generic.List<string>();
+        EnumChildWindows(parent, (h, l) => { var b = new System.Text.StringBuilder(4096); SendMessage(h, 0x000D, (IntPtr)4096, b); if (b.Length > 0) result.Add(b.ToString()); return true; }, IntPtr.Zero);
+        return result;
+    }
 }
 '@
 [Win32]::SetProcessDPIAware() | Out-Null
@@ -53,6 +60,7 @@ foreach ($window in [Win32]::VisibleWindowsOf($process.Id)) {
     $title = [Win32]::TitleOf($window)
     $area = ($r.Right - $r.Left) * ($r.Bottom - $r.Top)
     Write-Host ("Window: '{0}' {1}x{2}" -f $title, ($r.Right - $r.Left), ($r.Bottom - $r.Top))
+    foreach ($text in [Win32]::ChildTexts($window)) { Write-Host "  text: $text" }
     if ($title -eq '起動ランチャー') { $target = $window; $largest = [int]::MaxValue }
     elseif ($area -gt $largest) { $target = $window; $largest = $area }
 }
