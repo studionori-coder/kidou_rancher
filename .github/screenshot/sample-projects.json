@@ -1,0 +1,27 @@
+{
+  "Projects": [
+    {
+      "Id": "6d1f0a52-3c1e-4f7a-9b55-2f0d6c1a7e01",
+      "Name": "Webサイト制作",
+      "Folders": [
+        "C:\\Windows",
+        "C:\\Program Files",
+        "C:\\Windows\\win.ini",
+        "D:\\存在しないフォルダー",
+        "https://github.com",
+        "https://github.com/kidou-rancher-page-that-does-not-exist",
+        "https://unreachable.invalid"
+      ]
+    },
+    {
+      "Id": "6d1f0a52-3c1e-4f7a-9b55-2f0d6c1a7e02",
+      "Name": "経理",
+      "Folders": [ "C:\\Users" ]
+    },
+    {
+      "Id": "6d1f0a52-3c1e-4f7a-9b55-2f0d6c1a7e03",
+      "Name": "資料",
+      "Folders": [ "https://example.com" ]
+    }
+  ]
+}
