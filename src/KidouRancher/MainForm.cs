@@ -54,6 +54,7 @@ public sealed class MainForm : Form
     private readonly ComboBox _launchScopeBox = new();
     private readonly ToolTip _toolTip = new() { InitialDelay = 400, AutoPopDelay = 15000 };
     private readonly ContextMenuStrip _addItemMenu = new();
+    private readonly LinkLabel _updateLink = new();
     private readonly Button _moveFolderUpButton = new();
     private readonly Button _moveFolderDownButton = new();
     private readonly Button _moveProjectUpButton = new();
@@ -99,6 +100,7 @@ public sealed class MainForm : Form
         ActiveControl = _projectList;
         // 表示されたら、すべてのプロジェクトの項目を裏で確認し、一覧の件数表示に反映する
         Shown += (_, _) => _ = CheckAllProjectsAsync();
+        Shown += async (_, _) => await ShowUpdateNoticeAsync();
         RestoreWindowLayout();
         FormClosing += (_, _) => SavePreferencesOnClose();
         FormClosed += (_, _) =>
@@ -350,6 +352,12 @@ public sealed class MainForm : Form
             Margin = new Padding(0, 12, 24, 0),
             ForeColor = PendingColor
         });
+        // 新しいバージョンがあるときだけ表示する（起動時に GitHub の Releases を確認）
+        _updateLink.AutoSize = true;
+        _updateLink.Visible = false;
+        _updateLink.Margin = new Padding(0, 12, 24, 0);
+        _updateLink.LinkClicked += (_, _) => OpenUpdatePage();
+        footer.Controls.Add(_updateLink);
         _toolTip.SetToolTip(_launchButton, "一括起動（Ctrl+Enter）");
         _toolTip.SetToolTip(_launchScopeBox, "Alt+1〜Alt+5 で切り替え（すべて / フォルダー / ファイル / URL / 選択した項目）");
         root.Controls.Add(footer, 0, 2);
@@ -1456,6 +1464,33 @@ public sealed class MainForm : Form
                 slots.Release();
             }
         }));
+    }
+
+    /// <summary>GitHub の Releases に新しいバージョンがあれば、画面の下にリンクを出す。確認できなければ何もしない。</summary>
+    private async Task ShowUpdateNoticeAsync()
+    {
+        var current = typeof(MainForm).Assembly.GetName().Version ?? new Version(0, 0, 0);
+        var newer = await UpdateChecker.GetNewerVersionAsync(current, CancellationToken.None);
+        if (newer is null || IsDisposed)
+        {
+            return;
+        }
+
+        _updateLink.Text = $"新しいバージョン {newer} があります（クリックで開く）";
+        _updateLink.Visible = true;
+        _toolTip.SetToolTip(_updateLink, $"今のバージョン: {current.ToString(3)}　ダウンロードページを開きます");
+    }
+
+    private void OpenUpdatePage()
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(UpdateChecker.ReleasesPage) { UseShellExecute = true });
+        }
+        catch (Exception exception)
+        {
+            ShowError($"ダウンロードページを開けませんでした。\n{exception.Message}");
+        }
     }
 
     private void UpdateProjectMoveButtons()
