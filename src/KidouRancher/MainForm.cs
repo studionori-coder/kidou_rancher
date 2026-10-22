@@ -207,14 +207,20 @@ public sealed class MainForm : Form
     private ContextMenuStrip CreateFolderContextMenu()
     {
         var menu = new ContextMenuStrip();
-        menu.Items.Add(new ToolStripMenuItem("パス / URL をコピー", null, (_, _) => CopySelectedFolderPaths()) { ShortcutKeyDisplayString = "Ctrl+C" });
-        menu.Items.Add(new ToolStripMenuItem("開く", null, (_, _) => OpenSelectedItems()) { ShortcutKeyDisplayString = "Enter" });
-        menu.Items.Add(new ToolStripMenuItem("状態を再確認", null, (_, _) => RefreshFolders()) { ShortcutKeyDisplayString = "F5" });
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(new ToolStripMenuItem("削除", null, (_, _) => RemoveFolders()) { ShortcutKeyDisplayString = "Delete" });
+        var copy = new ToolStripMenuItem("パス / URL をコピー", null, (_, _) => CopySelectedFolderPaths()) { ShortcutKeyDisplayString = "Ctrl+C" };
+        var paste = new ToolStripMenuItem("貼り付けて追加", null, (_, _) => PasteItems()) { ShortcutKeyDisplayString = "Ctrl+V" };
+        var open = new ToolStripMenuItem("開く", null, (_, _) => OpenSelectedItems()) { ShortcutKeyDisplayString = "Enter" };
+        var recheck = new ToolStripMenuItem("状態を再確認", null, (_, _) => RefreshFolders()) { ShortcutKeyDisplayString = "F5" };
+        var delete = new ToolStripMenuItem("削除", null, (_, _) => RemoveFolders()) { ShortcutKeyDisplayString = "Delete" };
+        menu.Items.AddRange(new ToolStripItem[] { copy, paste, open, recheck, new ToolStripSeparator(), delete });
 
-        // 項目の無い場所で右クリックしたときはメニューを出さない
-        menu.Opening += (_, e) => e.Cancel = _folderList.SelectedItems.Count == 0;
+        // 項目の無い場所で右クリックしたときは、選択が必要な操作だけ無効にする
+        menu.Opening += (_, e) =>
+        {
+            var hasSelection = _folderList.SelectedItems.Count > 0;
+            copy.Enabled = open.Enabled = delete.Enabled = hasSelection;
+            e.Cancel = SelectedProject is null;
+        };
         return menu;
     }
 
@@ -223,6 +229,10 @@ public sealed class MainForm : Form
         if (e.Control && e.KeyCode == Keys.C)
         {
             CopySelectedFolderPaths();
+        }
+        else if (e.Control && e.KeyCode == Keys.V)
+        {
+            PasteItems();
         }
         else if (e.Control && e.KeyCode == Keys.A)
         {
@@ -257,7 +267,7 @@ public sealed class MainForm : Form
         var menu = new ContextMenuStrip();
         menu.Items.Add("フォルダー…", null, (_, _) => AddFolders());
         menu.Items.Add("ファイル…", null, (_, _) => AddFiles());
-        menu.Items.Add("URL…", null, (_, _) => AddUrl());
+        menu.Items.Add("パス / URL を入力…", null, (_, _) => AddByInput());
 
         Button? button = null;
         button = CreateButton("追加 ▾", (_, _) => menu.Show(button!, new Point(0, button!.Height)));
@@ -274,23 +284,21 @@ public sealed class MainForm : Form
 
     private void OnFolderListDragDrop(object? sender, DragEventArgs e)
     {
-        // エクスプローラーからはファイル・フォルダー、ブラウザーからはURLの文字列がドロップされる
+        // エクスプローラーからはファイル・フォルダー、ブラウザー等からはURLやパスの文字列がドロップされる
         if (e.Data?.GetData(DataFormats.FileDrop) is string[] paths)
         {
             AddItems(paths);
         }
         else if (e.Data?.GetData(DataFormats.UnicodeText) is string text)
         {
-            var urls = text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Where(LaunchTarget.IsUrl)
-                .ToArray();
-            if (urls.Length == 0)
+            var items = ParseItems(text);
+            if (items.Length == 0)
             {
-                ShowError("ドロップされた内容はURLではありません。");
+                ShowError("ドロップされた内容はパスやURLではありません。");
                 return;
             }
 
-            AddItems(urls);
+            AddItems(items);
         }
     }
 
@@ -434,34 +442,19 @@ public sealed class MainForm : Form
     {
         try
         {
-            // フォルダー・ファイルは存在確認（スリープ中のドライブ等で時間がかかるためUIスレッド外で行う）
-            var pathStatuses = await Task.Run(
-                () => folders.Select(folder => LaunchTarget.IsUrl(folder) ? null : TargetStatusChecker.CheckPath(folder)).ToArray(),
-                cancellationToken);
-            if (version != _folderStatusVersion || IsDisposed)
+            // 項目ごとに並行して確認し、結果が出たものから順に表示する。
+            // フォルダー・ファイルは存在確認（スリープ中のドライブや応答の遅いファイルサーバーがあるためUIスレッド外で行う）、
+            // URLは実際にアクセスして確認する
+            await Task.WhenAll(folders.Select(async (folder, index) =>
             {
-                return;
-            }
-
-            for (var index = 0; index < folders.Length; index++)
-            {
-                if (pathStatuses[index] is { } status)
+                var status = LaunchTarget.IsUrl(folder)
+                    ? await TargetStatusChecker.CheckUrlAsync(folder, cancellationToken)
+                    : await Task.Run(() => TargetStatusChecker.CheckPath(folder), cancellationToken);
+                if (version == _folderStatusVersion && !IsDisposed)
                 {
-                    ApplyFolderStatus(index, folders[index], status);
+                    ApplyFolderStatus(index, folder, status);
                 }
-            }
-
-            // URLは実際にアクセスして確認し、応答が返ったものから順に表示する
-            await Task.WhenAll(Enumerable.Range(0, folders.Length)
-                .Where(index => pathStatuses[index] is null)
-                .Select(async index =>
-                {
-                    var status = await TargetStatusChecker.CheckUrlAsync(folders[index], cancellationToken);
-                    if (version == _folderStatusVersion && !IsDisposed)
-                    {
-                        ApplyFolderStatus(index, folders[index], status);
-                    }
-                }));
+            }));
         }
         catch (OperationCanceledException)
         {
@@ -634,28 +627,66 @@ public sealed class MainForm : Form
         }
     }
 
-    private void AddUrl()
+    private void AddByInput()
     {
         if (SelectedProject is null)
         {
             return;
         }
 
-        var input = PromptForName("URLを追加", "URL（例: https://example.com）");
+        var input = PromptForName("パス / URL を入力", @"パスまたはURL（例: \\server\share\資料、C:\work\見積.xlsx、https://example.com）");
         if (string.IsNullOrWhiteSpace(input))
         {
             return;
         }
 
-        var url = LaunchTarget.NormalizeUrl(input);
-        if (url is null)
+        var item = LaunchTarget.NormalizeInput(input);
+        if (item is null)
         {
-            ShowError("URLの形式が正しくありません。");
+            ShowError("パスまたはURLの形式が正しくありません。");
             return;
         }
 
-        AddItems([url]);
+        AddItems([item]);
     }
+
+    private void PasteItems()
+    {
+        if (SelectedProject is null)
+        {
+            return;
+        }
+
+        try
+        {
+            // エクスプローラーでコピーしたファイル・フォルダー、またはパス・URLの文字列（複数行可）を追加する
+            if (Clipboard.ContainsFileDropList())
+            {
+                AddItems(Clipboard.GetFileDropList().Cast<string>());
+                return;
+            }
+
+            var items = Clipboard.ContainsText() ? ParseItems(Clipboard.GetText()) : Array.Empty<string>();
+            if (items.Length == 0)
+            {
+                ShowError("クリップボードにパスまたはURLがありません。");
+                return;
+            }
+
+            AddItems(items);
+        }
+        catch (Exception exception)
+        {
+            ShowError($"クリップボードを読み取れませんでした。\n{exception.Message}");
+        }
+    }
+
+    /// <summary>複数行の文字列からパス・URLを取り出す（パスやURLとして解釈できない行は無視する）。</summary>
+    private static string[] ParseItems(string text) =>
+        text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(line => LaunchTarget.NormalizeInput(line, completeUrlScheme: false))
+            .OfType<string>()
+            .ToArray();
 
     private void AddItems(IEnumerable<string> items)
     {
@@ -781,9 +812,9 @@ public sealed class MainForm : Form
         _launchButton.Enabled = false;
         try
         {
-            // 存在確認はスリープ中のドライブ等で時間がかかることがあるため、UIスレッド外で行う
+            // 存在確認はスリープ中のドライブやファイルサーバーで時間がかかることがあるため、UIスレッド外で並行して行う
             var items = project.Folders.ToArray();
-            var targets = await Task.Run(() => items.Select(item => (Path: item, Kind: LaunchTarget.Classify(item))).ToArray());
+            var targets = await Task.Run(() => items.AsParallel().AsOrdered().Select(item => (Path: item, Kind: LaunchTarget.Classify(item))).ToArray());
             var folders = targets.Where(target => target.Kind == LaunchTargetKind.Folder).Select(target => target.Path).ToArray();
             var others = targets.Where(target => target.Kind is LaunchTargetKind.File or LaunchTargetKind.Url).ToArray();
             if (folders.Length == 0 && others.Length == 0)
@@ -921,13 +952,13 @@ public sealed class MainForm : Form
             StartPosition = FormStartPosition.CenterParent,
             MinimizeBox = false,
             MaximizeBox = false,
-            ClientSize = new Size(380, 126),
+            ClientSize = new Size(480, 126),
             Font = Font
         };
-        var prompt = new Label { Text = label, Left = 16, Top = 16, Width = 340 };
-        var input = new TextBox { Left = 16, Top = 42, Width = 348, Text = initialValue ?? string.Empty };
-        var save = new Button { Text = "決定", DialogResult = DialogResult.OK, Left = 204, Top = 82, Width = 76 };
-        var cancel = new Button { Text = "キャンセル", DialogResult = DialogResult.Cancel, Left = 288, Top = 82, Width = 76 };
+        var prompt = new Label { Text = label, Left = 16, Top = 16, Width = 448 };
+        var input = new TextBox { Left = 16, Top = 42, Width = 448, Text = initialValue ?? string.Empty };
+        var save = new Button { Text = "決定", DialogResult = DialogResult.OK, Left = 304, Top = 82, Width = 76 };
+        var cancel = new Button { Text = "キャンセル", DialogResult = DialogResult.Cancel, Left = 388, Top = 82, Width = 76 };
         dialog.Controls.AddRange([prompt, input, save, cancel]);
         dialog.AcceptButton = save;
         dialog.CancelButton = cancel;

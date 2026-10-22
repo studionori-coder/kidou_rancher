@@ -57,6 +57,43 @@ public static class LaunchTarget
         return IsUrl(value) ? value : null;
     }
 
+    /// <summary>ドライブ（C:\...）またはファイルサーバー（\\server\share\...）の表記かどうか。</summary>
+    public static bool IsLocalOrNetworkPath(string value) =>
+        value.StartsWith(@"\\", StringComparison.Ordinal)
+        || value.StartsWith("//", StringComparison.Ordinal)
+        || (value.Length >= 3 && char.IsAsciiLetter(value[0]) && value[1] == ':' && value[2] is '\\' or '/');
+
+    /// <summary>
+    /// 入力・貼り付けされたパスまたはURLを登録用に整える。
+    /// 前後の引用符（エクスプローラーの「パスのコピー」）を外し、file:// や / 区切りの表記は Windows のパスに直す。
+    /// completeUrlScheme が true のときは、スキームの無い入力を https:// のURLとして扱う。
+    /// </summary>
+    public static string? NormalizeInput(string input, bool completeUrlScheme = true)
+    {
+        var value = input.Trim().Trim('"').Trim();
+        if (value.Length == 0)
+        {
+            return null;
+        }
+
+        if (value.StartsWith("file:", StringComparison.OrdinalIgnoreCase))
+        {
+            return Uri.TryCreate(value, UriKind.Absolute, out var fileUri) && fileUri.IsFile ? fileUri.LocalPath : null;
+        }
+
+        if (IsLocalOrNetworkPath(value))
+        {
+            return value.Replace('/', '\\');
+        }
+
+        if (IsUrl(value))
+        {
+            return value;
+        }
+
+        return completeUrlScheme ? NormalizeUrl(value) : null;
+    }
+
     public static string DisplayName(LaunchTargetKind kind) => kind switch
     {
         LaunchTargetKind.Folder => "フォルダー",

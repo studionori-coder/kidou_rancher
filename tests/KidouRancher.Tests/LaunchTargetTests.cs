@@ -53,4 +53,30 @@ public sealed class LaunchTargetTests
             Directory.Delete(directory, recursive: true);
         }
     }
+
+    [TestMethod]
+    [DataRow(@"\\fileserver\share\資料", @"\\fileserver\share\資料")]
+    [DataRow("//fileserver/share/資料", @"\\fileserver\share\資料")]
+    [DataRow(@"""\\fileserver\share\見積.xlsx""", @"\\fileserver\share\見積.xlsx")]
+    [DataRow(@"  ""C:\work\memo.txt""  ", @"C:\work\memo.txt")]
+    [DataRow("C:/work/web", @"C:\work\web")]
+    [DataRow("file://fileserver/share/a.txt", @"\\fileserver\share\a.txt")]
+    [DataRow("file:///C:/work/a%20b.txt", @"C:\work\a b.txt")]
+    [DataRow("https://example.com", "https://example.com")]
+    [DataRow("example.com", "https://example.com")]
+    public void NormalizeInput_AcceptsPathsInVariousNotations(string input, string expected) =>
+        Assert.AreEqual(expected, LaunchTarget.NormalizeInput(input));
+
+    [TestMethod]
+    public void NormalizeInput_DoesNotGuessUrlsWhenSchemeCompletionIsOff()
+    {
+        Assert.IsNull(LaunchTarget.NormalizeInput("hello", completeUrlScheme: false));
+        Assert.AreEqual("https://example.com", LaunchTarget.NormalizeInput("https://example.com", completeUrlScheme: false));
+        Assert.AreEqual(@"\\server\share", LaunchTarget.NormalizeInput(@"\\server\share", completeUrlScheme: false));
+    }
+
+    [TestMethod]
+    [DataRow(@"\\fileserver\share\資料")]
+    [DataRow(@"\\fileserver\share\見積.xlsx")]
+    public void IsUrl_RejectsFileServerPaths(string value) => Assert.IsFalse(LaunchTarget.IsUrl(value));
 }

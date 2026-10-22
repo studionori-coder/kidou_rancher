@@ -10,13 +10,24 @@ public static class TargetStatusChecker
 {
     private static readonly HttpClient Http = CreateHttpClient();
 
-    /// <summary>フォルダー・ファイルの存在確認。ディスクへのアクセスを伴うためUIスレッド外で呼ぶ。</summary>
+    /// <summary>フォルダー・ファイルの存在確認。ディスクやネットワークへのアクセスを伴うためUIスレッド外で呼ぶ。</summary>
     public static TargetStatus CheckPath(string value)
     {
         var kind = LaunchTarget.Classify(value);
-        return kind == LaunchTargetKind.Missing
-            ? new TargetStatus(kind, false, "見つかりません")
-            : new TargetStatus(kind, true, "有効");
+        if (kind != LaunchTargetKind.Missing)
+        {
+            return new TargetStatus(kind, true, "有効");
+        }
+
+        // ドライブやファイルサーバー自体に届かないのか、その中に項目が無いのかを区別する
+        var root = Path.GetPathRoot(value);
+        if (!string.IsNullOrEmpty(root) && !Directory.Exists(root))
+        {
+            var text = root.StartsWith(@"\\", StringComparison.Ordinal) ? "サーバーに接続できません" : "ドライブが見つかりません";
+            return new TargetStatus(kind, false, text);
+        }
+
+        return new TargetStatus(kind, false, "見つかりません");
     }
 
     public static async Task<TargetStatus> CheckUrlAsync(string url, CancellationToken cancellationToken)
