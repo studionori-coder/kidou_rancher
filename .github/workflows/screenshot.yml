@@ -22,7 +22,8 @@ jobs:
             Add-WindowsCapability -Online -Name 'Language.Fonts.Jpan~~~und-JPAN~0.0.1.0' | Out-Null
           }
 
-      - run: dotnet publish src/KidouRancher/KidouRancher.csproj -c Release -o app
+      # 配布版（Release）と同じ自己完結型でビルドする（ランナーの .NET の状態に左右されないように）
+      - run: dotnet publish src/KidouRancher/KidouRancher.csproj -c Release -r win-x64 --self-contained true -o app
 
       - name: Capture
         shell: pwsh
