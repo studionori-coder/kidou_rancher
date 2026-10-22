@@ -233,7 +233,8 @@ public sealed class MainForm : Form
         _folderDetail.Multiline = true;
         _folderDetail.ReadOnly = true;
         _folderDetail.WordWrap = true;
-        _folderDetail.ScrollBars = ScrollBars.Vertical;
+        _folderDetail.ScrollBars = ScrollBars.None;
+        _folderDetail.ClientSizeChanged += (_, _) => UpdateFolderDetailScrollBar();
         _folderDetail.BorderStyle = BorderStyle.None;
         _folderDetail.BackColor = Color.FromArgb(244, 246, 247);
         _folderDetail.ForeColor = Color.FromArgb(44, 59, 68);
@@ -1010,9 +1011,11 @@ public sealed class MainForm : Form
             e.Graphics.FillRectangle(brush, e.Bounds);
         }
 
-        // パスの列は途中を省略して末尾を残し、その他の列は末尾を省略する
+        // パスは途中を省略して末尾（ファイル名など）を残す。PathEllipsis は「\」区切りでしか働かず、
+        // URLでは先頭（https:// やドメイン）が消えてしまうため、URLとその他の列は末尾を省略する
+        var usePathEllipsis = e.ColumnIndex == 0 && !LaunchTarget.IsUrl(e.SubItem.Text);
         var flags = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix
-            | (e.ColumnIndex == 0 ? TextFormatFlags.PathEllipsis : TextFormatFlags.EndEllipsis);
+            | (usePathEllipsis ? TextFormatFlags.PathEllipsis : TextFormatFlags.EndEllipsis);
         var textBounds = Rectangle.FromLTRB(e.Bounds.Left + 4, e.Bounds.Top, e.Bounds.Right - 2, e.Bounds.Bottom);
         TextRenderer.DrawText(e.Graphics, e.SubItem.Text, e.SubItem.Font ?? _folderList.Font, textBounds, foreColor, flags);
     }
@@ -1022,6 +1025,25 @@ public sealed class MainForm : Form
     {
         var paths = SelectedFolderPaths();
         _folderDetail.Text = string.Join(Environment.NewLine, paths);
+        UpdateFolderDetailScrollBar();
+    }
+
+    /// <summary>欄に収まらないときだけスクロールバーを出す（空のときや短いときは表示しない）。</summary>
+    private void UpdateFolderDetailScrollBar()
+    {
+        var width = Math.Max(1, _folderDetail.ClientSize.Width - SystemInformation.VerticalScrollBarWidth);
+        var needed = TextRenderer.MeasureText(
+            _folderDetail.Text,
+            _folderDetail.Font,
+            new Size(width, int.MaxValue),
+            TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl).Height;
+        var scrollBars = _folderDetail.Text.Length > 0 && needed > _folderDetail.ClientSize.Height
+            ? ScrollBars.Vertical
+            : ScrollBars.None;
+        if (_folderDetail.ScrollBars != scrollBars)
+        {
+            _folderDetail.ScrollBars = scrollBars;
+        }
     }
 
     private void FitFolderColumns()
