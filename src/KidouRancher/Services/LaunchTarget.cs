@@ -62,7 +62,7 @@ public static class LaunchTarget
         LaunchTargetKind.Folder => "フォルダー",
         LaunchTargetKind.File => "ファイル",
         LaunchTargetKind.Url => "URL",
-        _ => "見つかりません"
+        _ => "不明"
     };
 
     /// <summary>フォルダーはエクスプローラー、ファイルは関連付けられたアプリ、URLは既定のブラウザーで開く。</summary>

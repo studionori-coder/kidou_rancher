@@ -5,6 +5,11 @@ namespace KidouRancher;
 
 public sealed class MainForm : Form
 {
+    private static readonly Color PendingColor = Color.FromArgb(120, 132, 140);
+    private static readonly Color NormalColor = Color.FromArgb(44, 59, 68);
+    private static readonly Color ValidColor = Color.FromArgb(28, 128, 76);
+    private static readonly Color InvalidColor = Color.FromArgb(185, 73, 61);
+
     private readonly ProjectStore _store = new();
     private readonly BackupService _backupService = new();
     private readonly PreferencesStore _preferencesStore = new();
@@ -20,6 +25,7 @@ public sealed class MainForm : Form
     private LauncherSettings _settings;
     private bool _updatingSelection;
     private int _folderStatusVersion;
+    private CancellationTokenSource? _statusCheckCancellation;
 
     public MainForm()
     {
@@ -154,8 +160,9 @@ public sealed class MainForm : Form
         _folderList.AllowDrop = true;
         _folderList.DragEnter += OnFolderListDragEnter;
         _folderList.DragDrop += OnFolderListDragDrop;
-        _folderList.Columns.Add("フォルダー / ファイル / URL", 480);
-        _folderList.Columns.Add("種類", 100);
+        _folderList.Columns.Add("フォルダー / ファイル / URL", 360);
+        _folderList.Columns.Add("種類", 70);
+        _folderList.Columns.Add("状態", 170);
         folderLayout.Controls.Add(_folderList, 0, 1);
 
         var folderButtons = new FlowLayoutPanel
@@ -202,6 +209,7 @@ public sealed class MainForm : Form
         var menu = new ContextMenuStrip();
         menu.Items.Add(new ToolStripMenuItem("パス / URL をコピー", null, (_, _) => CopySelectedFolderPaths()) { ShortcutKeyDisplayString = "Ctrl+C" });
         menu.Items.Add(new ToolStripMenuItem("開く", null, (_, _) => OpenSelectedItems()) { ShortcutKeyDisplayString = "Enter" });
+        menu.Items.Add(new ToolStripMenuItem("状態を再確認", null, (_, _) => RefreshFolders()) { ShortcutKeyDisplayString = "F5" });
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(new ToolStripMenuItem("削除", null, (_, _) => RemoveFolders()) { ShortcutKeyDisplayString = "Delete" });
 
@@ -230,6 +238,10 @@ public sealed class MainForm : Form
         else if (e.KeyCode == Keys.Delete)
         {
             RemoveFolders();
+        }
+        else if (e.KeyCode == Keys.F5)
+        {
+            RefreshFolders();
         }
         else
         {
@@ -390,53 +402,108 @@ public sealed class MainForm : Form
         }
 
         var project = SelectedProject;
-        _folderHeading.Text = project is null ? "起動する項目" : $"{project.Name} の起動項目";
         var version = ++_folderStatusVersion;
+        _statusCheckCancellation?.Cancel();
+        _statusCheckCancellation?.Dispose();
+        _statusCheckCancellation = new CancellationTokenSource();
         _folderList.BeginUpdate();
         _folderList.Items.Clear();
         if (project is not null)
         {
             foreach (var folder in project.Folders)
             {
-                // 種類の判定（存在確認）は非同期で行い、結果が出るまでは「確認中」と表示する
-                var item = new ListViewItem(folder) { ForeColor = Color.FromArgb(120, 132, 140) };
-                item.SubItems.Add("確認中…");
+                // 有効かどうかの確認は非同期で行い、結果が出るまでは「確認中」と表示する
+                var item = new ListViewItem(folder) { ForeColor = PendingColor, UseItemStyleForSubItems = false };
+                item.SubItems.Add(LaunchTarget.IsUrl(folder) ? LaunchTarget.DisplayName(LaunchTargetKind.Url) : string.Empty, PendingColor, item.BackColor, item.Font);
+                item.SubItems.Add("確認中…", PendingColor, item.BackColor, item.Font);
                 _folderList.Items.Add(item);
             }
         }
 
         _folderList.EndUpdate();
+        UpdateFolderHeading();
         _launchButton.Enabled = project is { Folders.Count: > 0 };
         UpdateFolderMoveButtons();
         if (project is { Folders.Count: > 0 })
         {
-            _ = UpdateFolderStatusesAsync(version, project.Folders.ToArray());
+            _ = UpdateFolderStatusesAsync(version, project.Folders.ToArray(), _statusCheckCancellation.Token);
         }
     }
 
-    private async Task UpdateFolderStatusesAsync(int version, string[] folders)
+    private async Task UpdateFolderStatusesAsync(int version, string[] folders, CancellationToken cancellationToken)
     {
-        var results = await Task.Run(() => folders.Select(LaunchTarget.Classify).ToArray());
-        if (version != _folderStatusVersion || IsDisposed || _folderList.Items.Count != folders.Length)
+        try
+        {
+            // フォルダー・ファイルは存在確認（スリープ中のドライブ等で時間がかかるためUIスレッド外で行う）
+            var pathStatuses = await Task.Run(
+                () => folders.Select(folder => LaunchTarget.IsUrl(folder) ? null : TargetStatusChecker.CheckPath(folder)).ToArray(),
+                cancellationToken);
+            if (version != _folderStatusVersion || IsDisposed)
+            {
+                return;
+            }
+
+            for (var index = 0; index < folders.Length; index++)
+            {
+                if (pathStatuses[index] is { } status)
+                {
+                    ApplyFolderStatus(index, folders[index], status);
+                }
+            }
+
+            // URLは実際にアクセスして確認し、応答が返ったものから順に表示する
+            await Task.WhenAll(Enumerable.Range(0, folders.Length)
+                .Where(index => pathStatuses[index] is null)
+                .Select(async index =>
+                {
+                    var status = await TargetStatusChecker.CheckUrlAsync(folders[index], cancellationToken);
+                    if (version == _folderStatusVersion && !IsDisposed)
+                    {
+                        ApplyFolderStatus(index, folders[index], status);
+                    }
+                }));
+        }
+        catch (OperationCanceledException)
+        {
+            // 一覧が更新されたため、古い確認結果は破棄する
+        }
+    }
+
+    private void ApplyFolderStatus(int index, string folder, TargetStatus status)
+    {
+        if (index >= _folderList.Items.Count)
         {
             return;
         }
 
-        _folderList.BeginUpdate();
-        for (var index = 0; index < folders.Length; index++)
+        var item = _folderList.Items[index];
+        if (!string.Equals(item.Text, folder, StringComparison.Ordinal))
         {
-            var item = _folderList.Items[index];
-            if (!string.Equals(item.Text, folders[index], StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            var kind = results[index];
-            item.ForeColor = kind == LaunchTargetKind.Missing ? Color.FromArgb(185, 73, 61) : Color.FromArgb(44, 59, 68);
-            item.SubItems[1].Text = LaunchTarget.DisplayName(kind);
+            return;
         }
 
-        _folderList.EndUpdate();
+        item.Tag = status;
+        item.ForeColor = status.IsValid ? NormalColor : InvalidColor;
+        item.SubItems[1].Text = LaunchTarget.DisplayName(status.Kind);
+        item.SubItems[1].ForeColor = item.ForeColor;
+        item.SubItems[2].Text = $"{(status.IsValid ? "○" : "×")} {status.Text}";
+        item.SubItems[2].ForeColor = status.IsValid ? ValidColor : InvalidColor;
+        UpdateFolderHeading();
+    }
+
+    private void UpdateFolderHeading()
+    {
+        var project = SelectedProject;
+        if (project is null)
+        {
+            _folderHeading.Text = "起動する項目";
+            return;
+        }
+
+        var invalidCount = _folderList.Items.Cast<ListViewItem>().Count(item => item.Tag is TargetStatus { IsValid: false });
+        _folderHeading.Text = invalidCount > 0
+            ? $"{project.Name} の起動項目（無効 {invalidCount} 件）"
+            : $"{project.Name} の起動項目";
     }
 
     private void UpdateProjectMoveButtons()
