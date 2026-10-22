@@ -47,3 +47,11 @@ $graphics.Dispose()
 $bitmap.Dispose()
 Stop-Process -Id $process.Id
 Write-Host "Saved $OutputPath ($width x $height)"
+Write-Host "Window title: $($process.MainWindowTitle)"
+
+# 起動に失敗したときの記録があれば出す（小さなウィンドウ＝エラーの画面を撮っていないかの確認用）
+$startupLog = Join-Path $env:LOCALAPPDATA 'KidouRancher\startup.log'
+if (Test-Path $startupLog) {
+    Write-Host '--- startup.log ---'
+    Get-Content $startupLog | Write-Host
+}
