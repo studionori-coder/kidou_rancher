@@ -33,6 +33,7 @@ public sealed class MainForm : Form
     private readonly ExplorerTabLauncher _launcher = new();
     private readonly ListBox _projectList = new();
     private readonly ListView _folderList = new();
+    private readonly TextBox _folderDetail = new();
     private readonly Label _folderHeading = new();
     private readonly Button _launchButton = new();
     private readonly ComboBox _launchScopeBox = new();
@@ -168,9 +169,10 @@ public sealed class MainForm : Form
         var folderPanel = CreatePanel();
         folderPanel.Padding = new Padding(18);
         content.Panel2.Controls.Add(folderPanel);
-        var folderLayout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1 };
+        var folderLayout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 4, ColumnCount = 1 };
         folderLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
         folderLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        folderLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
         folderLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
         folderPanel.Controls.Add(folderLayout);
         _folderHeading.Dock = DockStyle.Fill;
@@ -185,7 +187,20 @@ public sealed class MainForm : Form
         _folderList.MultiSelect = true;
         _folderList.HideSelection = false;
         _folderList.BorderStyle = BorderStyle.FixedSingle;
-        _folderList.SelectedIndexChanged += (_, _) => UpdateFolderMoveButtons();
+        _folderList.SelectedIndexChanged += (_, _) =>
+        {
+            UpdateFolderMoveButtons();
+            UpdateFolderDetail();
+        };
+        // 長いパスやURLでも内容を確認できるよう、一覧では途中を「…」で省略して末尾（ファイル名など）を残し、
+        // マウスを重ねるとツールチップで、選択すると一覧の下の欄で全体を表示する
+        _folderList.OwnerDraw = true;
+        _folderList.DrawColumnHeader += (_, e) => e.DrawDefault = true;
+        _folderList.DrawSubItem += OnFolderListDrawSubItem;
+        _folderList.ShowItemToolTips = true;
+        _folderList.ItemSelectionChanged += (_, e) => _folderList.Invalidate(e.Item?.Bounds ?? _folderList.ClientRectangle);
+        _folderList.GotFocus += (_, _) => _folderList.Invalidate();
+        _folderList.LostFocus += (_, _) => _folderList.Invalidate();
         _folderList.ContextMenuStrip = CreateFolderContextMenu();
         _folderList.KeyDown += OnFolderListKeyDown;
         _folderList.DoubleClick += (_, _) => OpenSelectedItems();
@@ -201,6 +216,18 @@ public sealed class MainForm : Form
         // パスの列を残りの幅いっぱいに広げ、状態の列が切れたり横スクロールが出たりしないようにする
         _folderList.ClientSizeChanged += (_, _) => FitFolderColumns();
         folderLayout.Controls.Add(_folderList, 0, 1);
+
+        _folderDetail.Dock = DockStyle.Fill;
+        _folderDetail.Multiline = true;
+        _folderDetail.ReadOnly = true;
+        _folderDetail.WordWrap = true;
+        _folderDetail.ScrollBars = ScrollBars.Vertical;
+        _folderDetail.BorderStyle = BorderStyle.None;
+        _folderDetail.BackColor = Color.FromArgb(244, 246, 247);
+        _folderDetail.ForeColor = Color.FromArgb(44, 59, 68);
+        _folderDetail.Margin = new Padding(0, 6, 0, 0);
+        _folderDetail.PlaceholderText = "項目を選択すると、ここにパスやURLの全体を表示します";
+        folderLayout.Controls.Add(_folderDetail, 0, 2);
 
         var folderButtons = new FlowLayoutPanel
         {
@@ -219,7 +246,7 @@ public sealed class MainForm : Form
         _moveFolderDownButton.Text = "下へ";
         _moveFolderDownButton.Click += (_, _) => MoveSelectedFolder(1);
         folderButtons.Controls.Add(_moveFolderDownButton);
-        folderLayout.Controls.Add(folderButtons, 0, 2);
+        folderLayout.Controls.Add(folderButtons, 0, 3);
 
         var footer = new FlowLayoutPanel
         {
@@ -731,11 +758,13 @@ public sealed class MainForm : Form
                 var item = new ListViewItem(folder) { ForeColor = PendingColor, UseItemStyleForSubItems = false };
                 item.SubItems.Add(LaunchTarget.IsUrl(folder) ? LaunchTarget.DisplayName(LaunchTargetKind.Url) : string.Empty, PendingColor, item.BackColor, item.Font);
                 item.SubItems.Add("確認中…", PendingColor, item.BackColor, item.Font);
+                item.ToolTipText = folder;
                 _folderList.Items.Add(item);
             }
         }
 
         _folderList.EndUpdate();
+        UpdateFolderDetail();
         UpdateFolderHeading();
         _launchButton.Enabled = project is { Folders.Count: > 0 };
         UpdateFolderMoveButtons();
@@ -791,8 +820,41 @@ public sealed class MainForm : Form
         item.SubItems[1].ForeColor = textColor;
         item.SubItems[2].Text = $"{(status.IsValid ? "○" : "×")} {status.Text}";
         item.SubItems[2].ForeColor = status.IsValid ? ValidColor : InvalidColor;
+        item.ToolTipText = $"{folder}\n種類: {item.SubItems[1].Text}\n状態: {item.SubItems[2].Text}";
         _folderList.Invalidate(item.Bounds);
         UpdateFolderHeading();
+    }
+
+    private void OnFolderListDrawSubItem(object? sender, DrawListViewSubItemEventArgs e)
+    {
+        if (e.Item is null || e.SubItem is null)
+        {
+            e.DrawDefault = true;
+            return;
+        }
+
+        // 選択行の色：一覧にフォーカスがあれば強調色、無ければ控えめな灰色（HideSelection = false と同じ見え方）
+        var selected = e.Item.Selected;
+        var focused = selected && _folderList.Focused;
+        var backColor = focused ? SystemColors.Highlight : selected ? Color.FromArgb(222, 227, 231) : _folderList.BackColor;
+        var foreColor = focused ? SystemColors.HighlightText : e.SubItem.ForeColor;
+        using (var brush = new SolidBrush(backColor))
+        {
+            e.Graphics.FillRectangle(brush, e.Bounds);
+        }
+
+        // パスの列は途中を省略して末尾を残し、その他の列は末尾を省略する
+        var flags = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix
+            | (e.ColumnIndex == 0 ? TextFormatFlags.PathEllipsis : TextFormatFlags.EndEllipsis);
+        var textBounds = Rectangle.FromLTRB(e.Bounds.Left + 4, e.Bounds.Top, e.Bounds.Right - 2, e.Bounds.Bottom);
+        TextRenderer.DrawText(e.Graphics, e.SubItem.Text, e.SubItem.Font ?? _folderList.Font, textBounds, foreColor, flags);
+    }
+
+    /// <summary>選択中の項目のパス・URLを、一覧の下の欄に省略せずに表示する（複数選択時は1行に1件）。</summary>
+    private void UpdateFolderDetail()
+    {
+        var paths = SelectedFolderPaths();
+        _folderDetail.Text = string.Join(Environment.NewLine, paths);
     }
 
     private void FitFolderColumns()
