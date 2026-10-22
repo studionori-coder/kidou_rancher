@@ -113,6 +113,49 @@ public sealed class LauncherProject
         return replaced;
     }
 
+    /// <summary>
+    /// 項目を別のプロジェクトへコピー（move が true なら移動）する。表題と起動しない設定も一緒に移す。
+    /// 移し先に同じ項目があるものはコピーしない（移動のときは元からは外す）。移し先に加えた件数を返す。
+    /// </summary>
+    public int TransferItemsTo(LauncherProject target, IEnumerable<string> items, bool move)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        if (ReferenceEquals(target, this))
+        {
+            return 0;
+        }
+
+        var selected = items.Where(item => Folders.Contains(item, StringComparer.OrdinalIgnoreCase)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var added = 0;
+        foreach (var item in selected)
+        {
+            if (!target.Folders.Contains(item, StringComparer.OrdinalIgnoreCase))
+            {
+                target.Folders.Add(item);
+                target.SetTitle(item, GetTitle(item));
+                target.SetEnabled(item, IsEnabled(item));
+                added++;
+            }
+        }
+
+        if (move)
+        {
+            Folders.RemoveAll(folder => selected.Contains(folder, StringComparer.OrdinalIgnoreCase));
+            RemoveUnusedItemSettings();
+        }
+
+        return added;
+    }
+
+    /// <summary>項目・表題・起動しない設定ごと複製したプロジェクトを作る（ID は新しくする）。</summary>
+    public LauncherProject Duplicate(string newName) => new()
+    {
+        Name = newName,
+        Folders = [.. Folders],
+        Titles = new Dictionary<string, string>(Titles, StringComparer.OrdinalIgnoreCase),
+        DisabledItems = [.. DisabledItems]
+    };
+
     /// <summary>一覧から外した項目の表題と、起動しない設定を取り除く。</summary>
     public void RemoveUnusedItemSettings()
     {

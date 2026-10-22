@@ -55,6 +55,9 @@ public sealed class MainForm : Form
     private readonly ToolTip _toolTip = new() { InitialDelay = 400, AutoPopDelay = 15000 };
     private readonly ContextMenuStrip _addItemMenu = new();
     private readonly LinkLabel _updateLink = new();
+    private readonly Label _statusLabel = new();
+    private readonly System.Windows.Forms.Timer _statusTimer = new() { Interval = 6000 };
+    private int _projectDropTarget = -1;
     private readonly Button _moveFolderUpButton = new();
     private readonly Button _moveFolderDownButton = new();
     private readonly Button _moveProjectUpButton = new();
@@ -198,7 +201,11 @@ public sealed class MainForm : Form
         _projectList.MouseDown += OnProjectListMouseDown;
         _projectList.MouseMove += OnProjectListMouseMove;
         _projectList.DragOver += OnProjectListDragOver;
-        _projectList.DragLeave += (_, _) => SetProjectDropIndex(-1);
+        _projectList.DragLeave += (_, _) =>
+        {
+            SetProjectDropIndex(-1);
+            SetProjectDropTarget(-1);
+        };
         _projectList.DragDrop += OnProjectListDragDrop;
         projectLayout.Controls.Add(_projectList, 0, 1);
         projectLayout.Controls.Add(CreateProjectButtons(), 0, 2);
@@ -358,6 +365,17 @@ public sealed class MainForm : Form
         _updateLink.Margin = new Padding(0, 12, 24, 0);
         _updateLink.LinkClicked += (_, _) => OpenUpdatePage();
         footer.Controls.Add(_updateLink);
+
+        // 移動・コピーなどの結果を数秒だけ出す（ダイアログで操作を止めないため）
+        _statusLabel.AutoSize = true;
+        _statusLabel.Margin = new Padding(0, 12, 24, 0);
+        _statusLabel.ForeColor = ValidColor;
+        footer.Controls.Add(_statusLabel);
+        _statusTimer.Tick += (_, _) =>
+        {
+            _statusTimer.Stop();
+            _statusLabel.Text = string.Empty;
+        };
         _toolTip.SetToolTip(_launchButton, "一括起動（Ctrl+Enter）");
         _toolTip.SetToolTip(_launchScopeBox, "Alt+1〜Alt+5 で切り替え（すべて / フォルダー / ファイル / URL / 選択した項目）");
         root.Controls.Add(footer, 0, 2);
@@ -372,8 +390,10 @@ public sealed class MainForm : Form
         var recheck = new ToolStripMenuItem("状態を再確認", null, (_, _) => RefreshFolders()) { ShortcutKeyDisplayString = "F5" };
         var title = new ToolStripMenuItem("表題を変更", null, (_, _) => EditSelectedTitle()) { ShortcutKeyDisplayString = "F2" };
         var toggle = new ToolStripMenuItem("一括起動の対象にする／外す", null, (_, _) => ToggleSelectedEnabled()) { ShortcutKeyDisplayString = "Space" };
+        var moveTo = new ToolStripMenuItem("別のプロジェクトへ移動");
+        var copyTo = new ToolStripMenuItem("別のプロジェクトへコピー");
         var delete = new ToolStripMenuItem("削除", null, (_, _) => RemoveFolders()) { ShortcutKeyDisplayString = "Delete" };
-        menu.Items.AddRange(new ToolStripItem[] { copy, paste, open, toggle, title, recheck, new ToolStripSeparator(), delete });
+        menu.Items.AddRange(new ToolStripItem[] { copy, paste, open, toggle, title, recheck, new ToolStripSeparator(), moveTo, copyTo, new ToolStripSeparator(), delete });
 
         // 項目の無い場所で右クリックしたときは、選択が必要な操作だけ無効にする
         menu.Opening += (_, e) =>
@@ -381,6 +401,18 @@ public sealed class MainForm : Form
             var hasSelection = _folderList.SelectedItems.Count > 0;
             copy.Enabled = open.Enabled = delete.Enabled = toggle.Enabled = hasSelection;
             title.Enabled = _folderList.SelectedItems.Count == 1;
+
+            // 移動先・コピー先は、開くたびに今のプロジェクト一覧から作り直す
+            foreach (var (submenu, move) in new[] { (moveTo, true), (copyTo, false) })
+            {
+                submenu.DropDownItems.Clear();
+                foreach (var target in _settings.Projects.Where(project => project != SelectedProject))
+                {
+                    submenu.DropDownItems.Add(target.Name, null, (_, _) => TransferItems(target, SelectedFolderPaths(), move));
+                }
+
+                submenu.Enabled = hasSelection && submenu.DropDownItems.Count > 0;
+            }
             e.Cancel = SelectedProject is null;
         };
         return menu;
@@ -598,8 +630,9 @@ public sealed class MainForm : Form
         var rename = new ToolStripMenuItem("名前変更", null, (_, _) => RenameProject()) { ShortcutKeyDisplayString = "F2" };
         var up = new ToolStripMenuItem("上へ", null, (_, _) => MoveSelectedProject(-1)) { ShortcutKeyDisplayString = "Ctrl+↑" };
         var down = new ToolStripMenuItem("下へ", null, (_, _) => MoveSelectedProject(1)) { ShortcutKeyDisplayString = "Ctrl+↓" };
+        var duplicate = new ToolStripMenuItem("複製", null, (_, _) => DuplicateProject());
         var delete = new ToolStripMenuItem("削除", null, (_, _) => DeleteProject()) { ShortcutKeyDisplayString = "Delete" };
-        menu.Items.AddRange(new ToolStripItem[] { rename, up, down, new ToolStripSeparator(), delete });
+        menu.Items.AddRange(new ToolStripItem[] { rename, duplicate, up, down, new ToolStripSeparator(), delete });
         menu.Opening += (_, e) =>
         {
             up.Enabled = _moveProjectUpButton.Enabled;
@@ -680,6 +713,26 @@ public sealed class MainForm : Form
 
     private void OnProjectListDragOver(object? sender, DragEventArgs e)
     {
+        var point = _projectList.PointToClient(new Point(e.X, e.Y));
+
+        // 右の一覧の項目を、左のプロジェクトへ移動（Ctrl を押しながらならコピー）
+        if (e.Data?.GetDataPresent(ItemsDragFormat) == true)
+        {
+            SetProjectDropIndex(-1);
+            var index = _projectList.IndexFromPoint(point);
+            var target = index == ListBox.NoMatches ? null : _projectList.Items[index] as LauncherProject;
+            if (target is null || target == SelectedProject)
+            {
+                e.Effect = DragDropEffects.None;
+                SetProjectDropTarget(-1);
+                return;
+            }
+
+            e.Effect = (e.KeyState & 8) != 0 ? DragDropEffects.Copy : DragDropEffects.Move;
+            SetProjectDropTarget(index);
+            return;
+        }
+
         if (e.Data?.GetDataPresent(ProjectDragFormat) != true)
         {
             e.Effect = DragDropEffects.None;
@@ -687,12 +740,24 @@ public sealed class MainForm : Form
         }
 
         e.Effect = DragDropEffects.Move;
-        SetProjectDropIndex(GetProjectInsertionIndex(_projectList.PointToClient(new Point(e.X, e.Y))));
+        SetProjectDropIndex(GetProjectInsertionIndex(point));
     }
 
     private void OnProjectListDragDrop(object? sender, DragEventArgs e)
     {
         SetProjectDropIndex(-1);
+        SetProjectDropTarget(-1);
+        if (e.Data?.GetData(ItemsDragFormat) is string pathsText)
+        {
+            var index = _projectList.IndexFromPoint(_projectList.PointToClient(new Point(e.X, e.Y)));
+            if (index != ListBox.NoMatches && _projectList.Items[index] is LauncherProject target)
+            {
+                TransferItems(target, pathsText.Split('\n'), move: e.Effect != DragDropEffects.Copy);
+            }
+
+            return;
+        }
+
         if (!int.TryParse(e.Data?.GetData(ProjectDragFormat) as string, out var fromIndex)
             || fromIndex < 0
             || fromIndex >= _settings.Projects.Count)
@@ -704,6 +769,76 @@ public sealed class MainForm : Form
         var insertIndex = GetProjectInsertionIndex(_projectList.PointToClient(new Point(e.X, e.Y)));
         ListReorder.Move(_settings.Projects, [fromIndex], insertIndex);
         SaveAndRefresh(project.Id);
+    }
+
+    /// <summary>選択中のプロジェクトの項目を、別のプロジェクトへ移動またはコピーする。</summary>
+    private void TransferItems(LauncherProject target, IReadOnlyCollection<string> paths, bool move)
+    {
+        var source = SelectedProject;
+        if (source is null || target == source || paths.Count == 0)
+        {
+            return;
+        }
+
+        var added = source.TransferItemsTo(target, paths, move);
+        SaveAndRefresh(source.Id);
+        var skipped = paths.Count - added;
+        var message = $"{added} 件を「{target.Name}」へ{(move ? "移動" : "コピー")}しました";
+        ShowStatus(skipped > 0 ? $"{message}（{skipped} 件は登録済み）" : message);
+    }
+
+    /// <summary>画面の下に操作の結果を数秒だけ表示する。</summary>
+    private void ShowStatus(string message)
+    {
+        _statusLabel.Text = message;
+        _statusTimer.Stop();
+        _statusTimer.Start();
+    }
+
+    /// <summary>項目のドロップ先のプロジェクトを枠で示す（-1 で消す）。</summary>
+    private void SetProjectDropTarget(int index)
+    {
+        if (index == _projectDropTarget)
+        {
+            return;
+        }
+
+        _projectDropTarget = index;
+        _projectList.Invalidate();
+        _projectList.Update();
+        if (index < 0 || index >= _projectList.Items.Count)
+        {
+            return;
+        }
+
+        var bounds = _projectList.GetItemRectangle(index);
+        bounds.Inflate(-1, -1);
+        using var graphics = _projectList.CreateGraphics();
+        using var pen = new Pen(DropIndicatorColor, 2);
+        graphics.DrawRectangle(pen, bounds);
+    }
+
+    /// <summary>プロジェクトを項目・表題・起動しない設定ごと複製し、元のすぐ下に置く。</summary>
+    private void DuplicateProject()
+    {
+        var project = SelectedProject;
+        if (project is null)
+        {
+            return;
+        }
+
+        var baseName = $"{project.Name} のコピー";
+        var name = baseName;
+        for (var number = 2; _settings.Projects.Any(other => string.Equals(other.Name, name, StringComparison.OrdinalIgnoreCase)); number++)
+        {
+            name = $"{baseName} ({number})";
+        }
+
+        var copy = project.Duplicate(name);
+        _settings.Projects.Insert(_settings.Projects.IndexOf(project) + 1, copy);
+        SaveAndRefresh(copy.Id);
+        _projectList.Focus();
+        ShowStatus($"「{project.Name}」を複製しました");
     }
 
     /// <summary>マウス位置から、ドロップしたときの挿入位置（0〜項目数）を求める。行の下半分なら次の行の前に入れる。</summary>
@@ -747,9 +882,11 @@ public sealed class MainForm : Form
             return;
         }
 
-        var indices = string.Join(",", _folderList.SelectedIndices.Cast<int>());
-        _folderList.DoDragDrop(new DataObject(ItemsDragFormat, indices), DragDropEffects.Move);
+        // 位置ではなくパス・URLそのものを運ぶ（一覧内の並び替えと、左のプロジェクトへの移動・コピーの両方に使う）
+        var paths = string.Join("\n", SelectedFolderPaths());
+        _folderList.DoDragDrop(new DataObject(ItemsDragFormat, paths), DragDropEffects.Move | DragDropEffects.Copy);
         SetFolderDropIndex(-1);
+        SetProjectDropTarget(-1);
     }
 
     private void OnFolderListDragOver(object? sender, DragEventArgs e)
@@ -776,9 +913,9 @@ public sealed class MainForm : Form
     private void OnFolderListDragDrop(object? sender, DragEventArgs e)
     {
         SetFolderDropIndex(-1);
-        if (e.Data?.GetData(ItemsDragFormat) is string indicesText)
+        if (e.Data?.GetData(ItemsDragFormat) is string pathsText)
         {
-            MoveDraggedFolders(indicesText, GetFolderInsertionIndex(_folderList.PointToClient(new Point(e.X, e.Y))));
+            MoveDraggedFolders(pathsText, GetFolderInsertionIndex(_folderList.PointToClient(new Point(e.X, e.Y))));
             return;
         }
 
@@ -800,7 +937,7 @@ public sealed class MainForm : Form
         }
     }
 
-    private void MoveDraggedFolders(string indicesText, int insertIndex)
+    private void MoveDraggedFolders(string pathsText, int insertIndex)
     {
         var project = SelectedProject;
         if (project is null)
@@ -808,9 +945,9 @@ public sealed class MainForm : Form
             return;
         }
 
-        var indices = indicesText.Split(',')
-            .Select(text => int.TryParse(text, out var index) ? index : -1)
-            .Where(index => index >= 0 && index < project.Folders.Count)
+        var indices = pathsText.Split('\n')
+            .Select(path => project.Folders.FindIndex(folder => string.Equals(folder, path, StringComparison.OrdinalIgnoreCase)))
+            .Where(index => index >= 0)
             .ToArray();
         if (indices.Length == 0)
         {

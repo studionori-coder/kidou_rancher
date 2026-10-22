@@ -130,6 +130,54 @@ public sealed class ProjectStoreTests
     }
 
     [TestMethod]
+    public void TransferItemsTo_MovesItemsWithTheirSettings()
+    {
+        var source = new LauncherProject { Name = "A", Folders = [@"C:\a", @"C:\b", @"C:\c"] };
+        source.SetTitle(@"C:\a", "資料");
+        source.SetEnabled(@"C:\b", false);
+        var target = new LauncherProject { Name = "B", Folders = [@"C:\c"] };
+
+        var added = source.TransferItemsTo(target, [@"C:\a", @"C:\b", @"C:\c"], move: true);
+
+        Assert.AreEqual(2, added);
+        CollectionAssert.AreEqual(new[] { @"C:\c", @"C:\a", @"C:\b" }, target.Folders);
+        Assert.AreEqual("資料", target.GetTitle(@"C:\a"));
+        Assert.IsFalse(target.IsEnabled(@"C:\b"));
+        Assert.AreEqual(0, source.Folders.Count);
+        Assert.AreEqual(0, source.Titles.Count);
+        Assert.AreEqual(0, source.DisabledItems.Count);
+    }
+
+    [TestMethod]
+    public void TransferItemsTo_CopyKeepsTheSource()
+    {
+        var source = new LauncherProject { Name = "A", Folders = [@"C:\a"] };
+        var target = new LauncherProject { Name = "B" };
+
+        Assert.AreEqual(1, source.TransferItemsTo(target, [@"C:\a"], move: false));
+        CollectionAssert.AreEqual(new[] { @"C:\a" }, source.Folders);
+        CollectionAssert.AreEqual(new[] { @"C:\a" }, target.Folders);
+        Assert.AreEqual(0, source.TransferItemsTo(source, [@"C:\a"], move: true));
+    }
+
+    [TestMethod]
+    public void Duplicate_CopiesItemsAndSettingsWithANewId()
+    {
+        var project = new LauncherProject { Name = "A", Folders = [@"C:\a", @"C:\b"] };
+        project.SetTitle(@"C:\a", "資料");
+        project.SetEnabled(@"C:\b", false);
+
+        var copy = project.Duplicate("A のコピー");
+        copy.Folders.Add(@"C:\c");
+
+        Assert.AreNotEqual(project.Id, copy.Id);
+        Assert.AreEqual("A のコピー", copy.Name);
+        Assert.AreEqual("資料", copy.GetTitle(@"C:\a"));
+        Assert.IsFalse(copy.IsEnabled(@"C:\b"));
+        Assert.AreEqual(2, project.Folders.Count);
+    }
+
+    [TestMethod]
     public void DisabledItems_AreRemovedWithTheirItems()
     {
         var project = new LauncherProject { Folders = [@"C:\a", @"C:\b"] };
