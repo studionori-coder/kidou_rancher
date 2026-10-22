@@ -41,6 +41,7 @@ public sealed class MainForm : Form
     private readonly PreferencesStore _preferencesStore = new();
     private readonly ExplorerTabLauncher _launcher = new();
     private readonly ShellIconCache _iconCache = new();
+    private SplitContainer _content = null!;
     private readonly ListBox _projectList = new();
     private readonly ListView _folderList = new();
     private readonly TextBox _folderDetail = new();
@@ -92,7 +93,8 @@ public sealed class MainForm : Form
         RefreshProjects(_preferencesStore.Load().LastSelectedProjectId);
         // 起動直後から ↑↓ でプロジェクトを選び、Enter で一括起動できるようにする
         ActiveControl = _projectList;
-        FormClosing += (_, _) => SaveSelectedProject();
+        RestoreWindowLayout();
+        FormClosing += (_, _) => SavePreferencesOnClose();
         FormClosed += (_, _) => _iconCache.Dispose();
     }
 
@@ -136,7 +138,7 @@ public sealed class MainForm : Form
         header.Controls.Add(backupButtons, 1, 0);
         root.Controls.Add(header, 0, 0);
 
-        var content = new SplitContainer
+        var content = _content = new SplitContainer
         {
             Dock = DockStyle.Fill,
             FixedPanel = FixedPanel.Panel1,
@@ -250,6 +252,14 @@ public sealed class MainForm : Form
         _folderList.Columns.Add("状態", 200);
         // パスの列を残りの幅いっぱいに広げ、状態の列が切れたり横スクロールが出たりしないようにする
         _folderList.ClientSizeChanged += (_, _) => FitFolderColumns();
+        // 表題・種類・状態の列幅を変えたら、パスの列を残りの幅に合わせ直す
+        _folderList.ColumnWidthChanged += (_, e) =>
+        {
+            if (e.ColumnIndex != PathColumn)
+            {
+                FitFolderColumns();
+            }
+        };
         folderLayout.Controls.Add(_folderList, 0, 1);
 
         _folderDetail.Dock = DockStyle.Fill;
@@ -1309,11 +1319,66 @@ public sealed class MainForm : Form
             : $"{project.Name} の起動項目";
     }
 
-    private void SaveSelectedProject()
+    /// <summary>終了時に、選択中のプロジェクトとウィンドウの配置（位置・大きさ・境目・列の幅）を覚えておく。</summary>
+    private void SavePreferencesOnClose()
     {
         var preferences = _preferencesStore.Load();
         preferences.LastSelectedProjectId = SelectedProject?.Id;
+        var bounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
+        preferences.WindowBounds = [bounds.X, bounds.Y, bounds.Width, bounds.Height];
+        preferences.WindowMaximized = WindowState == FormWindowState.Maximized;
+        preferences.SplitterDistance = _content.SplitterDistance;
+        preferences.ColumnWidths =
+        [
+            _folderList.Columns[TitleColumn].Width,
+            _folderList.Columns[KindColumn].Width,
+            _folderList.Columns[StatusColumn].Width
+        ];
         _preferencesStore.Save(preferences);
+    }
+
+    /// <summary>
+    /// 前回の配置で開く。保存した位置が今の画面から外れている（モニターを外したなど）ときは、既定の位置に開く。
+    /// 境目は画面の大きさが決まってから合わせる必要があるため、表示時（Load）に設定する。
+    /// </summary>
+    private void RestoreWindowLayout()
+    {
+        var preferences = _preferencesStore.Load();
+        if (preferences.WindowBounds is [var x, var y, var width, var height])
+        {
+            var bounds = new Rectangle(x, y, Math.Max(width, MinimumSize.Width), Math.Max(height, MinimumSize.Height));
+            if (WindowLayout.IsVisibleOnScreens(bounds, Screen.AllScreens.Select(screen => screen.WorkingArea)))
+            {
+                StartPosition = FormStartPosition.Manual;
+                Bounds = bounds;
+            }
+        }
+
+        if (preferences.WindowMaximized)
+        {
+            WindowState = FormWindowState.Maximized;
+        }
+
+        if (preferences.ColumnWidths is [var titleWidth, var kindWidth, var statusWidth])
+        {
+            _folderList.Columns[TitleColumn].Width = Math.Clamp(titleWidth, 40, 600);
+            _folderList.Columns[KindColumn].Width = Math.Clamp(kindWidth, 40, 300);
+            _folderList.Columns[StatusColumn].Width = Math.Clamp(statusWidth, 60, 500);
+        }
+
+        if (preferences.SplitterDistance is { } distance)
+        {
+            Load += (_, _) =>
+            {
+                var max = _content.Width - _content.Panel2MinSize - _content.SplitterWidth;
+                if (max > _content.Panel1MinSize)
+                {
+                    _content.SplitterDistance = Math.Clamp(distance, _content.Panel1MinSize, max);
+                }
+
+                FitFolderColumns();
+            };
+        }
     }
 
     private void UpdateProjectMoveButtons()

@@ -215,6 +215,21 @@ public sealed class ProjectStoreTests
     }
 
     [TestMethod]
+    public void Preferences_RoundTripsWindowLayout()
+    {
+        using var temporaryDirectory = new TemporaryDirectory();
+        var store = new PreferencesStore(Path.Combine(temporaryDirectory.Path, "preferences.json"));
+
+        store.Save(new AppPreferences { WindowBounds = [10, 20, 1000, 700], WindowMaximized = true, SplitterDistance = 320, ColumnWidths = [150, 80, 210] });
+
+        var loaded = store.Load();
+        CollectionAssert.AreEqual(new[] { 10, 20, 1000, 700 }, loaded.WindowBounds);
+        Assert.IsTrue(loaded.WindowMaximized);
+        Assert.AreEqual(320, loaded.SplitterDistance);
+        CollectionAssert.AreEqual(new[] { 150, 80, 210 }, loaded.ColumnWidths);
+    }
+
+    [TestMethod]
     public void Preferences_ReturnsDefaultsWhenFileIsBroken()
     {
         using var temporaryDirectory = new TemporaryDirectory();

@@ -12,6 +12,17 @@ public sealed class AppPreferences
 
     /// <summary>前回終了時に選択していたプロジェクト。次回起動時に選択状態で表示する。</summary>
     public Guid? LastSelectedProjectId { get; set; }
+
+    /// <summary>前回終了時のウィンドウの位置と大きさ（最大化していたときは元の大きさ）。</summary>
+    public int[]? WindowBounds { get; set; }
+
+    public bool WindowMaximized { get; set; }
+
+    /// <summary>左右の一覧の境目の位置（左の一覧の幅）。</summary>
+    public int? SplitterDistance { get; set; }
+
+    /// <summary>起動項目一覧の列の幅（表題・種類・状態。パスの列は残りの幅に合わせる）。</summary>
+    public int[]? ColumnWidths { get; set; }
 }
 
 public sealed class PreferencesStore
