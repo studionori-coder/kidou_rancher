@@ -23,6 +23,12 @@ public sealed class MainForm : Form
     private static readonly Color InvalidColor = Color.FromArgb(185, 73, 61);
     private static readonly Color DropIndicatorColor = Color.FromArgb(28, 112, 93);
 
+    // 起動項目一覧の列。表題は後から追加した列のため末尾に置き、DisplayIndex で一番左に表示する
+    private const int PathColumn = 0;
+    private const int KindColumn = 1;
+    private const int StatusColumn = 2;
+    private const int TitleColumn = 3;
+
     // 一覧内のドラッグ＆ドロップによる並び替えで使う、アプリ内専用のデータ形式
     private const string ProjectDragFormat = "KidouRancher.ProjectReorder";
     private const string ItemsDragFormat = "KidouRancher.ItemsReorder";
@@ -37,7 +43,7 @@ public sealed class MainForm : Form
     private readonly Label _folderHeading = new();
     private readonly Button _launchButton = new();
     private readonly ComboBox _launchScopeBox = new();
-    private readonly ToolTip _toolTip = new();
+    private readonly ToolTip _toolTip = new() { InitialDelay = 400, AutoPopDelay = 15000 };
     private readonly ContextMenuStrip _addItemMenu = new();
     private readonly Button _moveFolderUpButton = new();
     private readonly Button _moveFolderDownButton = new();
@@ -117,8 +123,8 @@ public sealed class MainForm : Form
             WrapContents = false,
             Padding = new Padding(0, 13, 0, 0)
         };
-        backupButtons.Controls.Add(CreateButton("読み込み", (_, _) => ImportSettings()));
-        backupButtons.Controls.Add(CreateButton("書き出し", (_, _) => ExportSettings()));
+        backupButtons.Controls.Add(CreateButton("読み込み", (_, _) => ImportSettings(), "書き出した JSON ファイルから設定を元に戻す（今の設定は置き換わる）"));
+        backupButtons.Controls.Add(CreateButton("書き出し", (_, _) => ExportSettings(), "すべてのプロジェクトを JSON ファイルに保存する（バックアップ）"));
         header.Controls.Add(backupButtons, 1, 0);
         root.Controls.Add(header, 0, 0);
 
@@ -159,6 +165,7 @@ public sealed class MainForm : Form
             RefreshFolders();
         };
         _projectList.DoubleClick += (_, _) => RenameProject();
+        _toolTip.SetToolTip(_projectList, "↑↓ 選択　Enter 一括起動　→ 右の一覧へ　F2 名前変更　Delete 削除　Ctrl+↑↓ / ドラッグ 並び替え");
         _projectList.KeyDown += OnProjectListKeyDown;
         _projectList.ContextMenuStrip = CreateProjectContextMenu();
         _projectList.AllowDrop = true;
@@ -215,7 +222,7 @@ public sealed class MainForm : Form
         _folderList.LostFocus += (_, _) => _folderList.Invalidate();
         _folderList.ContextMenuStrip = CreateFolderContextMenu();
         _folderList.KeyDown += OnFolderListKeyDown;
-        _folderList.DoubleClick += (_, _) => OpenSelectedItems();
+        _folderList.DoubleClick += (_, _) => OnFolderListDoubleClick();
         _folderList.AllowDrop = true;
         _folderList.DragEnter += OnFolderListDragOver;
         _folderList.DragOver += OnFolderListDragOver;
@@ -225,6 +232,8 @@ public sealed class MainForm : Form
         _folderList.Columns.Add("フォルダー / ファイル / URL", 300);
         _folderList.Columns.Add("種類", 80);
         _folderList.Columns.Add("状態", 200);
+        _folderList.Columns.Add("表題", 140);
+        _folderList.Columns[TitleColumn].DisplayIndex = 0;
         // パスの列を残りの幅いっぱいに広げ、状態の列が切れたり横スクロールが出たりしないようにする
         _folderList.ClientSizeChanged += (_, _) => FitFolderColumns();
         folderLayout.Controls.Add(_folderList, 0, 1);
@@ -250,9 +259,11 @@ public sealed class MainForm : Form
             Padding = new Padding(0, 7, 0, 0)
         };
         folderButtons.Controls.Add(CreateAddItemButton());
-        folderButtons.Controls.Add(CreateButton("選択を削除", (_, _) => RemoveFolders()));
+        folderButtons.Controls.Add(CreateButton("選択を削除", (_, _) => RemoveFolders(), "選択した項目を一覧から外す（Delete）"));
         ApplyButtonStyle(_moveFolderUpButton);
         ApplyButtonStyle(_moveFolderDownButton);
+        _toolTip.SetToolTip(_moveFolderUpButton, "選択した項目を上へ（Ctrl+↑）。ドラッグ＆ドロップでも並び替えられます");
+        _toolTip.SetToolTip(_moveFolderDownButton, "選択した項目を下へ（Ctrl+↓）。ドラッグ＆ドロップでも並び替えられます");
         _moveFolderUpButton.Text = "上へ";
         _moveFolderUpButton.Click += (_, _) => MoveSelectedFolder(-1);
         folderButtons.Controls.Add(_moveFolderUpButton);
@@ -313,14 +324,16 @@ public sealed class MainForm : Form
         var paste = new ToolStripMenuItem("貼り付けて追加", null, (_, _) => PasteItems()) { ShortcutKeyDisplayString = "Ctrl+V" };
         var open = new ToolStripMenuItem("選択した項目を起動", null, (_, _) => OpenSelectedItems()) { ShortcutKeyDisplayString = "Enter" };
         var recheck = new ToolStripMenuItem("状態を再確認", null, (_, _) => RefreshFolders()) { ShortcutKeyDisplayString = "F5" };
+        var title = new ToolStripMenuItem("表題を変更", null, (_, _) => EditSelectedTitle()) { ShortcutKeyDisplayString = "F2" };
         var delete = new ToolStripMenuItem("削除", null, (_, _) => RemoveFolders()) { ShortcutKeyDisplayString = "Delete" };
-        menu.Items.AddRange(new ToolStripItem[] { copy, paste, open, recheck, new ToolStripSeparator(), delete });
+        menu.Items.AddRange(new ToolStripItem[] { copy, paste, open, title, recheck, new ToolStripSeparator(), delete });
 
         // 項目の無い場所で右クリックしたときは、選択が必要な操作だけ無効にする
         menu.Opening += (_, e) =>
         {
             var hasSelection = _folderList.SelectedItems.Count > 0;
             copy.Enabled = open.Enabled = delete.Enabled = hasSelection;
+            title.Enabled = _folderList.SelectedItems.Count == 1;
             e.Cancel = SelectedProject is null;
         };
         return menu;
@@ -366,6 +379,10 @@ public sealed class MainForm : Form
         else if (e.KeyCode == Keys.Insert)
         {
             ShowAddItemMenuInList();
+        }
+        else if (e.KeyCode == Keys.F2)
+        {
+            EditSelectedTitle();
         }
         else
         {
@@ -514,6 +531,7 @@ public sealed class MainForm : Form
               Insert　　　　追加メニュー　　Ctrl+V　貼り付けて追加
               Ctrl+C　　　　パス・URL をコピー　　Delete　削除
               Ctrl+↑↓　　 並び替え　　F5　状態を再確認
+              F2　　　　　　表題を変更（表題の列のダブルクリックでも可）
             """;
         MessageBox.Show(this, help, "キー操作の一覧", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
@@ -816,6 +834,8 @@ public sealed class MainForm : Form
         buttons.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
         buttons.RowStyles.Add(new RowStyle(SizeType.Percent, 50));
 
+        _toolTip.SetToolTip(_moveProjectUpButton, "選択したプロジェクトを上へ（Ctrl+↑）。ドラッグ＆ドロップでも並び替えられます");
+        _toolTip.SetToolTip(_moveProjectDownButton, "選択したプロジェクトを下へ（Ctrl+↓）。ドラッグ＆ドロップでも並び替えられます");
         _moveProjectUpButton.Text = "上へ";
         _moveProjectUpButton.Click += (_, _) => MoveSelectedProject(-1);
         ApplyButtonStyle(_moveProjectUpButton);
@@ -825,9 +845,9 @@ public sealed class MainForm : Form
 
         Button[] cells =
         [
-            CreateButton("追加", (_, _) => AddProject()),
-            CreateButton("名前変更", (_, _) => RenameProject()),
-            CreateButton("削除", (_, _) => DeleteProject()),
+            CreateButton("追加", (_, _) => AddProject(), "新しいプロジェクトを作る（Ctrl+N）"),
+            CreateButton("名前変更", (_, _) => RenameProject(), "プロジェクト名を変更する（F2 / ダブルクリック）"),
+            CreateButton("削除", (_, _) => DeleteProject(), "プロジェクトを削除する（Delete。確認あり）"),
             _moveProjectUpButton,
             _moveProjectDownButton
         ];
@@ -852,11 +872,17 @@ public sealed class MainForm : Form
         BorderStyle = BorderStyle.FixedSingle
     };
 
-    private static Button CreateButton(string text, EventHandler onClick)
+    /// <summary>ボタンを作る。toolTip を渡すと、マウスを重ねたときに説明とショートカットキーを表示する。</summary>
+    private Button CreateButton(string text, EventHandler onClick, string? toolTip = null)
     {
         var button = new Button { Text = text };
         ApplyButtonStyle(button);
         button.Click += onClick;
+        if (toolTip is not null)
+        {
+            _toolTip.SetToolTip(button, toolTip);
+        }
+
         return button;
     }
 
@@ -926,7 +952,8 @@ public sealed class MainForm : Form
                 var item = new ListViewItem(folder) { ForeColor = PendingColor, UseItemStyleForSubItems = false };
                 item.SubItems.Add(LaunchTarget.IsUrl(folder) ? LaunchTarget.DisplayName(LaunchTargetKind.Url) : string.Empty, PendingColor, item.BackColor, item.Font);
                 item.SubItems.Add("確認中…", PendingColor, item.BackColor, item.Font);
-                item.ToolTipText = folder;
+                item.SubItems.Add(project.GetTitle(folder), PendingColor, item.BackColor, item.Font);
+                item.ToolTipText = BuildItemToolTip(item, folder);
                 _folderList.Items.Add(item);
             }
         }
@@ -983,12 +1010,13 @@ public sealed class MainForm : Form
         item.Tag = status;
         item.ForeColor = textColor;
         // UseItemStyleForSubItems が false のときは各セルの色を個別に設定し、行ごと再描画する
-        item.SubItems[0].ForeColor = textColor;
-        item.SubItems[1].Text = LaunchTarget.DisplayName(status.Kind);
-        item.SubItems[1].ForeColor = textColor;
-        item.SubItems[2].Text = $"{(status.IsValid ? "○" : "×")} {status.Text}";
-        item.SubItems[2].ForeColor = status.IsValid ? ValidColor : InvalidColor;
-        item.ToolTipText = $"{folder}\n種類: {item.SubItems[1].Text}\n状態: {item.SubItems[2].Text}";
+        item.SubItems[PathColumn].ForeColor = textColor;
+        item.SubItems[KindColumn].Text = LaunchTarget.DisplayName(status.Kind);
+        item.SubItems[KindColumn].ForeColor = textColor;
+        item.SubItems[StatusColumn].Text = $"{(status.IsValid ? "○" : "×")} {status.Text}";
+        item.SubItems[StatusColumn].ForeColor = status.IsValid ? ValidColor : InvalidColor;
+        item.SubItems[TitleColumn].ForeColor = textColor;
+        item.ToolTipText = BuildItemToolTip(item, folder);
         _folderList.Invalidate(item.Bounds);
         UpdateFolderHeading();
     }
@@ -1013,7 +1041,7 @@ public sealed class MainForm : Form
 
         // パスは途中を省略して末尾（ファイル名など）を残す。PathEllipsis は「\」区切りでしか働かず、
         // URLでは先頭（https:// やドメイン）が消えてしまうため、URLとその他の列は末尾を省略する
-        var usePathEllipsis = e.ColumnIndex == 0 && !LaunchTarget.IsUrl(e.SubItem.Text);
+        var usePathEllipsis = e.ColumnIndex == PathColumn && !LaunchTarget.IsUrl(e.SubItem.Text);
         var flags = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix
             | (usePathEllipsis ? TextFormatFlags.PathEllipsis : TextFormatFlags.EndEllipsis);
         var textBounds = Rectangle.FromLTRB(e.Bounds.Left + 4, e.Bounds.Top, e.Bounds.Right - 2, e.Bounds.Bottom);
@@ -1046,15 +1074,67 @@ public sealed class MainForm : Form
         }
     }
 
-    private void FitFolderColumns()
+    /// <summary>項目にマウスを重ねたときの説明。パス・URLの全体、表題、種類、状態と、使えるキーを出す。</summary>
+    private static string BuildItemToolTip(ListViewItem item, string folder)
     {
-        if (_folderList.Columns.Count < 3)
+        var lines = new List<string> { folder };
+        if (item.SubItems[TitleColumn].Text is { Length: > 0 } title)
+        {
+            lines.Insert(0, $"表題: {title}");
+        }
+
+        if (item.Tag is TargetStatus)
+        {
+            lines.Add($"種類: {item.SubItems[KindColumn].Text}　状態: {item.SubItems[StatusColumn].Text}");
+        }
+
+        lines.Add("Enter / ダブルクリック: 起動　F2: 表題を変更　Ctrl+C: コピー　Delete: 削除");
+        return string.Join("\n", lines);
+    }
+
+    /// <summary>表題の列をダブルクリックしたら表題の変更、それ以外は起動。</summary>
+    private void OnFolderListDoubleClick()
+    {
+        var hit = _folderList.HitTest(_folderList.PointToClient(MousePosition));
+        if (hit.Item is not null && hit.SubItem is not null && hit.Item.SubItems.IndexOf(hit.SubItem) == TitleColumn)
+        {
+            EditSelectedTitle();
+            return;
+        }
+
+        OpenSelectedItems();
+    }
+
+    /// <summary>選択中の項目（1件）の表題を変更する。空欄にすると表題を消す。</summary>
+    private void EditSelectedTitle()
+    {
+        var project = SelectedProject;
+        if (project is null || _folderList.SelectedItems.Count != 1)
         {
             return;
         }
 
-        var otherColumnsWidth = _folderList.Columns[1].Width + _folderList.Columns[2].Width;
-        _folderList.Columns[0].Width = Math.Max(160, _folderList.ClientSize.Width - otherColumnsWidth - 4);
+        var path = _folderList.SelectedItems[0].Text;
+        var input = PromptForName("表題の変更", "表題（空欄にすると表題なし）", project.GetTitle(path));
+        if (input is null)
+        {
+            return;
+        }
+
+        project.SetTitle(path, input);
+        SaveAndRefresh(project.Id, [path]);
+        _folderList.Focus();
+    }
+
+    private void FitFolderColumns()
+    {
+        if (_folderList.Columns.Count <= TitleColumn)
+        {
+            return;
+        }
+
+        var otherColumnsWidth = _folderList.Columns[KindColumn].Width + _folderList.Columns[StatusColumn].Width + _folderList.Columns[TitleColumn].Width;
+        _folderList.Columns[PathColumn].Width = Math.Max(160, _folderList.ClientSize.Width - otherColumnsWidth - 4);
     }
 
     private void UpdateFolderHeading()
@@ -1306,6 +1386,7 @@ public sealed class MainForm : Form
         var selectedPaths = _folderList.SelectedItems.Cast<ListViewItem>().Select(item => item.Text).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var firstIndex = _folderList.SelectedIndices.Cast<int>().Min();
         project.Folders.RemoveAll(folder => selectedPaths.Contains(folder));
+        project.RemoveUnusedTitles();
         SaveAndRefresh(project.Id);
 
         // 削除した位置の項目を選び、続けて Delete や ↑↓ で操作できるようにする

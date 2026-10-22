@@ -31,6 +31,49 @@ public sealed class ProjectStoreTests
     }
 
     [TestMethod]
+    public void SaveAndLoad_PreservesItemTitles()
+    {
+        using var temporaryDirectory = new TemporaryDirectory();
+        var store = new ProjectStore(Path.Combine(temporaryDirectory.Path, "projects.json"));
+        var project = new LauncherProject { Name = "Web", Folders = [@"C:\work\web", "https://example.com"] };
+        project.SetTitle(@"C:\work\web", "制作データ");
+        project.SetTitle("https://example.com", "  お客様サイト  ");
+
+        store.Save(new LauncherSettings { Projects = [project] });
+
+        var loaded = store.Load().Projects.Single();
+        Assert.AreEqual("制作データ", loaded.GetTitle(@"c:\WORK\web"));
+        Assert.AreEqual("お客様サイト", loaded.GetTitle("https://example.com"));
+    }
+
+    [TestMethod]
+    public void Load_AcceptsSettingsFromOlderVersionsWithoutTitles()
+    {
+        using var temporaryDirectory = new TemporaryDirectory();
+        var filePath = Path.Combine(temporaryDirectory.Path, "projects.json");
+        File.WriteAllText(filePath, """
+            { "Projects": [ { "Id": "6d1f0a52-3c1e-4f7a-9b55-2f0d6c1a7e01", "Name": "Web", "Folders": [ "C:\\work" ] } ] }
+            """);
+
+        var project = new ProjectStore(filePath).Load().Projects.Single();
+        Assert.AreEqual(string.Empty, project.GetTitle(@"C:\work"));
+    }
+
+    [TestMethod]
+    public void Titles_CanBeClearedAndAreRemovedWithTheirItems()
+    {
+        var project = new LauncherProject { Folders = [@"C:\a", @"C:\b"] };
+        project.SetTitle(@"C:\a", "A");
+        project.SetTitle(@"C:\b", "B");
+
+        project.SetTitle(@"C:\A", "  ");
+        project.Folders.Remove(@"C:\b");
+        project.RemoveUnusedTitles();
+
+        Assert.AreEqual(0, project.Titles.Count);
+    }
+
+    [TestMethod]
     public void Save_RejectsDuplicateProjectNames()
     {
         using var temporaryDirectory = new TemporaryDirectory();
