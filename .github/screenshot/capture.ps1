@@ -18,6 +18,17 @@ public static class Win32 {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int count);
+    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+    public static System.Collections.Generic.List<IntPtr> VisibleWindowsOf(int pid) {
+        var result = new System.Collections.Generic.List<IntPtr>();
+        EnumWindows((h, l) => { uint p; GetWindowThreadProcessId(h, out p); if (p == pid && IsWindowVisible(h)) result.Add(h); return true; }, IntPtr.Zero);
+        return result;
+    }
+    public static string TitleOf(IntPtr hWnd) { var b = new System.Text.StringBuilder(256); GetWindowText(hWnd, b, 256); return b.ToString(); }
 }
 '@
 [Win32]::SetProcessDPIAware() | Out-Null
@@ -32,11 +43,25 @@ if ($process.MainWindowHandle -eq 0) { throw 'アプリのウィンドウが表�
 
 # URLの確認結果（最大8秒）が出そろうまで待つ
 Start-Sleep -Seconds 12
-[Win32]::SetForegroundWindow($process.MainWindowHandle) | Out-Null
+
+# プロセスの見えているウィンドウをすべて出し（エラー画面などの確認用）、メインの画面を撮る
+$target = [IntPtr]::Zero
+$largest = 0
+foreach ($window in [Win32]::VisibleWindowsOf($process.Id)) {
+    $r = New-Object Win32+RECT
+    [Win32]::GetWindowRect($window, [ref] $r) | Out-Null
+    $title = [Win32]::TitleOf($window)
+    $area = ($r.Right - $r.Left) * ($r.Bottom - $r.Top)
+    Write-Host ("Window: '{0}' {1}x{2}" -f $title, ($r.Right - $r.Left), ($r.Bottom - $r.Top))
+    if ($title -eq '起動ランチャー') { $target = $window; $largest = [int]::MaxValue }
+    elseif ($area -gt $largest) { $target = $window; $largest = $area }
+}
+if ($target -eq [IntPtr]::Zero) { $target = $process.MainWindowHandle }
+[Win32]::SetForegroundWindow($target) | Out-Null
 Start-Sleep -Seconds 1
 
 $rect = New-Object Win32+RECT
-[Win32]::GetWindowRect($process.MainWindowHandle, [ref] $rect) | Out-Null
+[Win32]::GetWindowRect($target, [ref] $rect) | Out-Null
 $width = $rect.Right - $rect.Left
 $height = $rect.Bottom - $rect.Top
 $bitmap = New-Object System.Drawing.Bitmap $width, $height
@@ -47,7 +72,7 @@ $graphics.Dispose()
 $bitmap.Dispose()
 Stop-Process -Id $process.Id
 Write-Host "Saved $OutputPath ($width x $height)"
-Write-Host "Window title: $($process.MainWindowTitle)"
+Write-Host "Captured: '$([Win32]::TitleOf($target))'"
 
 # 起動に失敗したときの記録があれば出す（小さなウィンドウ＝エラーの画面を撮っていないかの確認用）
 $startupLog = Join-Path $env:LOCALAPPDATA 'KidouRancher\startup.log'
