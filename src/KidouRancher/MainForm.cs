@@ -40,6 +40,7 @@ public sealed class MainForm : Form
     private readonly BackupService _backupService = new();
     private readonly PreferencesStore _preferencesStore = new();
     private readonly ExplorerTabLauncher _launcher = new();
+    private readonly ShellIconCache _iconCache = new();
     private readonly ListBox _projectList = new();
     private readonly ListView _folderList = new();
     private readonly TextBox _folderDetail = new();
@@ -92,6 +93,7 @@ public sealed class MainForm : Form
         // 起動直後から ↑↓ でプロジェクトを選び、Enter で一括起動できるようにする
         ActiveControl = _projectList;
         FormClosing += (_, _) => SaveSelectedProject();
+        FormClosed += (_, _) => _iconCache.Dispose();
     }
 
     private void BuildLayout()
@@ -1151,6 +1153,26 @@ public sealed class MainForm : Form
             var glyphPoint = new Point(e.Bounds.Left + 4, e.Bounds.Top + (e.Bounds.Height - glyph.Height) / 2);
             CheckBoxRenderer.DrawCheckBox(e.Graphics, glyphPoint, state);
             textLeft = glyphPoint.X + glyph.Width + 6;
+        }
+
+        if (e.ColumnIndex == PathColumn)
+        {
+            // 種類が一目で分かるよう、Windows と同じアイコンをパスの前に出す（起動しない行は淡く）
+            var icon = _iconCache.Get(e.Item.Name, (e.Item.Tag as TargetStatus)?.Kind);
+            if (icon is not null)
+            {
+                var iconPoint = new Point(textLeft, e.Bounds.Top + (e.Bounds.Height - icon.Height) / 2);
+                if (e.Item.Checked)
+                {
+                    e.Graphics.DrawImage(icon, iconPoint.X, iconPoint.Y, icon.Width, icon.Height);
+                }
+                else
+                {
+                    ControlPaint.DrawImageDisabled(e.Graphics, icon, iconPoint.X, iconPoint.Y, backColor);
+                }
+
+                textLeft += icon.Width + 6;
+            }
         }
 
         var textBounds = Rectangle.FromLTRB(textLeft, e.Bounds.Top, e.Bounds.Right - 2, e.Bounds.Bottom);
