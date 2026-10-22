@@ -94,6 +94,42 @@ public sealed class ProjectStoreTests
     }
 
     [TestMethod]
+    public void ReplaceInItems_MovesPathsAndKeepsTitlesAndSettings()
+    {
+        var project = new LauncherProject { Folders = [@"\\old-server\share\資料", @"\\OLD-SERVER\share\見積.xlsx", "https://example.com"] };
+        project.SetTitle(@"\\old-server\share\資料", "資料");
+        project.SetEnabled(@"\\OLD-SERVER\share\見積.xlsx", false);
+
+        var count = project.ReplaceInItems(@"\\old-server\", @"\\192.168.1.20\");
+
+        Assert.AreEqual(2, count);
+        CollectionAssert.AreEqual(new[] { @"\\192.168.1.20\share\資料", @"\\192.168.1.20\share\見積.xlsx", "https://example.com" }, project.Folders);
+        Assert.AreEqual("資料", project.GetTitle(@"\\192.168.1.20\share\資料"));
+        Assert.IsFalse(project.IsEnabled(@"\\192.168.1.20\share\見積.xlsx"));
+        Assert.AreEqual(1, project.Titles.Count);
+    }
+
+    [TestMethod]
+    public void ReplaceInItems_MergesItemsThatBecomeTheSame()
+    {
+        var project = new LauncherProject { Folders = [@"\\old\share", @"\\new\share", @"C:\work"] };
+
+        var count = project.ReplaceInItems(@"\\old\", @"\\new\");
+
+        Assert.AreEqual(1, count);
+        CollectionAssert.AreEqual(new[] { @"\\new\share", @"C:\work" }, project.Folders);
+    }
+
+    [TestMethod]
+    public void ReplaceInItems_DoesNothingForEmptySearchText()
+    {
+        var project = new LauncherProject { Folders = [@"C:\work"] };
+
+        Assert.AreEqual(0, project.ReplaceInItems("", "x"));
+        CollectionAssert.AreEqual(new[] { @"C:\work" }, project.Folders);
+    }
+
+    [TestMethod]
     public void DisabledItems_AreRemovedWithTheirItems()
     {
         var project = new LauncherProject { Folders = [@"C:\a", @"C:\b"] };

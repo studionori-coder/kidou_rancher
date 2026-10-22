@@ -130,6 +130,7 @@ public sealed class MainForm : Form
         };
         backupButtons.Controls.Add(CreateButton("読み込み", (_, _) => ImportSettings(), "書き出した JSON ファイルから設定を元に戻す（今の設定は置き換わる）"));
         backupButtons.Controls.Add(CreateButton("書き出し", (_, _) => ExportSettings(), "すべてのプロジェクトを JSON ファイルに保存する（バックアップ）"));
+        backupButtons.Controls.Add(CreateButton("一括置き換え", (_, _) => ReplacePaths(), "パス・URLの文字をまとめて置き換える。ファイルサーバーの移転などに（Ctrl+H）"));
         header.Controls.Add(backupButtons, 1, 0);
         root.Controls.Add(header, 0, 0);
 
@@ -463,6 +464,9 @@ public sealed class MainForm : Form
             case Keys.F1:
                 ShowKeyboardHelp();
                 return true;
+            case Keys.Control | Keys.H:
+                ReplacePaths();
+                return true;
             case Keys.F6:
             case Keys.Shift | Keys.F6:
                 if (_folderList.ContainsFocus)
@@ -533,6 +537,7 @@ public sealed class MainForm : Form
               Ctrl+1〜9　　 N 番目のプロジェクトへ移動
               F6　　　　　　左右の一覧を切り替え
               Ctrl+N　　　　新しいプロジェクト
+              Ctrl+H　　　　パス・URL の一括置き換え
               Ctrl+D / Ctrl+O / Ctrl+L　フォルダー / ファイル / パス・URL を追加
               F1　　　　　　この一覧
 
@@ -1703,6 +1708,27 @@ public sealed class MainForm : Form
         {
             _launchButton.Enabled = SelectedProject is { Folders.Count: > 0 };
         }
+    }
+
+    /// <summary>パス・URLの一括置き換え。選択中の項目があれば、そのドライブ／サーバーの部分を初期値にする。</summary>
+    private void ReplacePaths()
+    {
+        if (_settings.Projects.Count == 0)
+        {
+            return;
+        }
+
+        var selected = SelectedFolderPaths().FirstOrDefault();
+        var initial = selected is not null && !LaunchTarget.IsUrl(selected) ? Path.GetPathRoot(selected) ?? string.Empty : string.Empty;
+        using var dialog = new ReplacePathsDialog(_settings.Projects, SelectedProject, initial, Font);
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+        {
+            return;
+        }
+
+        var count = dialog.TargetProjects.ToArray().Sum(project => project.ReplaceInItems(dialog.OldText, dialog.NewText));
+        SaveAndRefresh(SelectedProject?.Id);
+        MessageBox.Show(this, $"{count} 件を置き換えました。", "一括置き換え", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private void ExportSettings()

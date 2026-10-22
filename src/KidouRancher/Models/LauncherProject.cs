@@ -66,6 +66,53 @@ public sealed class LauncherProject
         }
     }
 
+    /// <summary>
+    /// 項目のパス・URLに含まれる文字列をまとめて置き換える（大文字・小文字は区別しない）。
+    /// ファイルサーバーの移転などで使う。表題と起動しない設定も新しいパスへ引き継ぎ、
+    /// 置き換えの結果ほかの項目と同じになったものは1つにまとめる。置き換えた項目の数を返す。
+    /// </summary>
+    public int ReplaceInItems(string oldText, string newText)
+    {
+        if (string.IsNullOrEmpty(oldText))
+        {
+            return 0;
+        }
+
+        var replaced = 0;
+        var result = new List<string>();
+        var titles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var disabled = new List<string>();
+        foreach (var item in Folders)
+        {
+            var newItem = item.Replace(oldText, newText, StringComparison.OrdinalIgnoreCase);
+            if (!string.Equals(newItem, item, StringComparison.Ordinal))
+            {
+                replaced++;
+            }
+
+            if (result.Contains(newItem, StringComparer.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            result.Add(newItem);
+            if (GetTitle(item) is { Length: > 0 } title)
+            {
+                titles[newItem] = title;
+            }
+
+            if (!IsEnabled(item))
+            {
+                disabled.Add(newItem);
+            }
+        }
+
+        Folders = result;
+        Titles = titles;
+        DisabledItems = disabled;
+        return replaced;
+    }
+
     /// <summary>一覧から外した項目の表題と、起動しない設定を取り除く。</summary>
     public void RemoveUnusedItemSettings()
     {
