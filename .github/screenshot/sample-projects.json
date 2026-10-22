@@ -20,7 +20,11 @@
         "C:\\Windows\\win.ini": "設定ファイル（見本）",
         "D:\\共有\\営業部\\2026年度\\提案資料\\お客様向け\\最終版\\ご提案書_株式会社サンプル_2026年10月版.pptx": "10月の提案書",
         "https://github.com": "GitHub"
-      }
+      },
+      "DisabledItems": [
+        "C:\\Program Files",
+        "https://github.com/kidou-rancher-page-that-does-not-exist"
+      ]
     },
     {
       "Id": "6d1f0a52-3c1e-4f7a-9b55-2f0d6c1a7e02",

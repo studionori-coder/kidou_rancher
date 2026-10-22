@@ -68,9 +68,41 @@ public sealed class ProjectStoreTests
 
         project.SetTitle(@"C:\A", "  ");
         project.Folders.Remove(@"C:\b");
-        project.RemoveUnusedTitles();
+        project.RemoveUnusedItemSettings();
 
         Assert.AreEqual(0, project.Titles.Count);
+    }
+
+    [TestMethod]
+    public void DisabledItems_RoundTripAndIgnoreCase()
+    {
+        using var temporaryDirectory = new TemporaryDirectory();
+        var store = new ProjectStore(Path.Combine(temporaryDirectory.Path, "projects.json"));
+        var project = new LauncherProject { Name = "Web", Folders = [@"C:\a", @"C:\b"] };
+        project.SetEnabled(@"C:\b", false);
+        project.SetEnabled(@"C:\B", false);
+
+        store.Save(new LauncherSettings { Projects = [project] });
+
+        var loaded = store.Load().Projects.Single();
+        Assert.IsTrue(loaded.IsEnabled(@"C:\a"));
+        Assert.IsFalse(loaded.IsEnabled(@"c:\b"));
+        Assert.AreEqual(1, loaded.DisabledItems.Count);
+
+        loaded.SetEnabled(@"C:\b", true);
+        Assert.IsTrue(loaded.IsEnabled(@"C:\b"));
+    }
+
+    [TestMethod]
+    public void DisabledItems_AreRemovedWithTheirItems()
+    {
+        var project = new LauncherProject { Folders = [@"C:\a", @"C:\b"] };
+        project.SetEnabled(@"C:\b", false);
+
+        project.Folders.Remove(@"C:\b");
+        project.RemoveUnusedItemSettings();
+
+        Assert.AreEqual(0, project.DisabledItems.Count);
     }
 
     [TestMethod]

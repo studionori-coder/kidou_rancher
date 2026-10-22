@@ -1,5 +1,6 @@
 using KidouRancher.Models;
 using KidouRancher.Services;
+using System.Windows.Forms.VisualStyles;
 
 namespace KidouRancher;
 
@@ -21,6 +22,7 @@ public sealed class MainForm : Form
     private static readonly Color NormalColor = Color.FromArgb(44, 59, 68);
     private static readonly Color ValidColor = Color.FromArgb(28, 128, 76);
     private static readonly Color InvalidColor = Color.FromArgb(185, 73, 61);
+    private static readonly Color DisabledColor = Color.FromArgb(160, 168, 174);
     private static readonly Color DropIndicatorColor = Color.FromArgb(28, 112, 93);
 
     // 起動項目一覧の列（表示順どおり）。各行のパス・URLは item.Name に持つ。
@@ -58,6 +60,8 @@ public sealed class MainForm : Form
     private Point _projectDragStartPoint;
     private int _projectDropIndex = -1;
     private int _folderDropIndex = -1;
+    private bool _populatingFolders;
+    private bool _suppressNextItemCheck;
 
     public MainForm()
     {
@@ -206,6 +210,13 @@ public sealed class MainForm : Form
         };
         // 長いパスやURLでも内容を確認できるよう、一覧では途中を「…」で省略して末尾（ファイル名など）を残し、
         // マウスを重ねるとツールチップで、選択すると一覧の下の欄で全体を表示する
+        // チェックを外した項目は一括起動しない（Space でも切り替え）
+        _folderList.CheckBoxes = true;
+        _folderList.ItemCheck += OnFolderListItemCheck;
+        _folderList.ItemChecked += OnFolderListItemChecked;
+        // ListView はダブルクリックでもチェックが切り替わるが、ここではダブルクリック＝起動なので打ち消す
+        _folderList.MouseDown += (_, e) => _suppressNextItemCheck = e.Clicks > 1;
+        _folderList.MouseUp += (_, _) => _suppressNextItemCheck = false;
         _folderList.OwnerDraw = true;
         _folderList.DrawColumnHeader += (_, e) => e.DrawDefault = true;
         _folderList.DrawSubItem += OnFolderListDrawSubItem;
@@ -325,14 +336,15 @@ public sealed class MainForm : Form
         var open = new ToolStripMenuItem("選択した項目を起動", null, (_, _) => OpenSelectedItems()) { ShortcutKeyDisplayString = "Enter" };
         var recheck = new ToolStripMenuItem("状態を再確認", null, (_, _) => RefreshFolders()) { ShortcutKeyDisplayString = "F5" };
         var title = new ToolStripMenuItem("表題を変更", null, (_, _) => EditSelectedTitle()) { ShortcutKeyDisplayString = "F2" };
+        var toggle = new ToolStripMenuItem("一括起動の対象にする／外す", null, (_, _) => ToggleSelectedEnabled()) { ShortcutKeyDisplayString = "Space" };
         var delete = new ToolStripMenuItem("削除", null, (_, _) => RemoveFolders()) { ShortcutKeyDisplayString = "Delete" };
-        menu.Items.AddRange(new ToolStripItem[] { copy, paste, open, title, recheck, new ToolStripSeparator(), delete });
+        menu.Items.AddRange(new ToolStripItem[] { copy, paste, open, toggle, title, recheck, new ToolStripSeparator(), delete });
 
         // 項目の無い場所で右クリックしたときは、選択が必要な操作だけ無効にする
         menu.Opening += (_, e) =>
         {
             var hasSelection = _folderList.SelectedItems.Count > 0;
-            copy.Enabled = open.Enabled = delete.Enabled = hasSelection;
+            copy.Enabled = open.Enabled = delete.Enabled = toggle.Enabled = hasSelection;
             title.Enabled = _folderList.SelectedItems.Count == 1;
             e.Cancel = SelectedProject is null;
         };
@@ -383,6 +395,10 @@ public sealed class MainForm : Form
         else if (e.KeyCode == Keys.F2)
         {
             EditSelectedTitle();
+        }
+        else if (e.KeyCode == Keys.Space && e.Modifiers == Keys.None)
+        {
+            ToggleSelectedEnabled();
         }
         else
         {
@@ -532,6 +548,7 @@ public sealed class MainForm : Form
               Ctrl+C　　　　パス・URL をコピー　　Delete　削除
               Ctrl+↑↓　　 並び替え　　F5　状態を再確認
               F2　　　　　　表題を変更（表題の列のダブルクリックでも可）
+              Space　　　　 一括起動の対象にする／外す（チェックの切り替え）
             """;
         MessageBox.Show(this, help, "キー操作の一覧", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
@@ -942,6 +959,7 @@ public sealed class MainForm : Form
         _statusCheckCancellation?.Cancel();
         _statusCheckCancellation?.Dispose();
         _statusCheckCancellation = new CancellationTokenSource();
+        _populatingFolders = true;
         _folderList.BeginUpdate();
         _folderList.Items.Clear();
         if (project is not null)
@@ -949,7 +967,7 @@ public sealed class MainForm : Form
             foreach (var folder in project.Folders)
             {
                 // 有効かどうかの確認は非同期で行い、結果が出るまでは「確認中」と表示する
-                var item = new ListViewItem(project.GetTitle(folder)) { Name = folder, ForeColor = PendingColor, UseItemStyleForSubItems = false };
+                var item = new ListViewItem(project.GetTitle(folder)) { Name = folder, ForeColor = PendingColor, UseItemStyleForSubItems = false, Checked = project.IsEnabled(folder) };
                 item.SubItems.Add(folder, PendingColor, item.BackColor, item.Font);
                 item.SubItems.Add(LaunchTarget.IsUrl(folder) ? LaunchTarget.DisplayName(LaunchTargetKind.Url) : string.Empty, PendingColor, item.BackColor, item.Font);
                 item.SubItems.Add("確認中…", PendingColor, item.BackColor, item.Font);
@@ -959,6 +977,12 @@ public sealed class MainForm : Form
         }
 
         _folderList.EndUpdate();
+        _populatingFolders = false;
+        foreach (ListViewItem item in _folderList.Items)
+        {
+            ApplyRowColors(item);
+        }
+
         UpdateFolderDetail();
         UpdateFolderHeading();
         _launchButton.Enabled = project is { Folders.Count: > 0 };
@@ -1006,19 +1030,88 @@ public sealed class MainForm : Form
             return;
         }
 
-        var textColor = status.IsValid ? NormalColor : InvalidColor;
         item.Tag = status;
-        item.ForeColor = textColor;
-        // UseItemStyleForSubItems が false のときは各セルの色を個別に設定し、行ごと再描画する
-        item.SubItems[PathColumn].ForeColor = textColor;
         item.SubItems[KindColumn].Text = LaunchTarget.DisplayName(status.Kind);
-        item.SubItems[KindColumn].ForeColor = textColor;
         item.SubItems[StatusColumn].Text = $"{(status.IsValid ? "○" : "×")} {status.Text}";
-        item.SubItems[StatusColumn].ForeColor = status.IsValid ? ValidColor : InvalidColor;
-        item.SubItems[TitleColumn].ForeColor = textColor;
         item.ToolTipText = BuildItemToolTip(item, folder);
-        _folderList.Invalidate(item.Bounds);
+        ApplyRowColors(item);
         UpdateFolderHeading();
+    }
+
+    /// <summary>
+    /// 行の文字色を決める：起動しない（チェックなし）行は全体を灰色、無効な行は赤、確認中は薄い灰色。
+    /// UseItemStyleForSubItems が false のときは各セルの色を個別に設定し、行ごと再描画する。
+    /// </summary>
+    private void ApplyRowColors(ListViewItem item)
+    {
+        var status = item.Tag as TargetStatus;
+        var textColor = !item.Checked ? DisabledColor
+            : status is null ? PendingColor
+            : status.IsValid ? NormalColor
+            : InvalidColor;
+        var statusColor = !item.Checked || status is null ? textColor : status.IsValid ? ValidColor : InvalidColor;
+        item.ForeColor = textColor;
+        item.SubItems[TitleColumn].ForeColor = textColor;
+        item.SubItems[PathColumn].ForeColor = textColor;
+        item.SubItems[KindColumn].ForeColor = textColor;
+        item.SubItems[StatusColumn].ForeColor = statusColor;
+        if (_folderList.Items.Contains(item))
+        {
+            _folderList.Invalidate(item.Bounds);
+        }
+    }
+
+    private void OnFolderListItemCheck(object? sender, ItemCheckEventArgs e)
+    {
+        if (_suppressNextItemCheck && !_populatingFolders)
+        {
+            e.NewValue = e.CurrentValue;
+        }
+    }
+
+    /// <summary>チェックの切り替えを保存する。一覧は作り直さず、その行の見た目と見出しだけ更新する。</summary>
+    private void OnFolderListItemChecked(object? sender, ItemCheckedEventArgs e)
+    {
+        var project = SelectedProject;
+        if (_populatingFolders || project is null || e.Item is null || string.IsNullOrEmpty(e.Item.Name))
+        {
+            return;
+        }
+
+        if (project.IsEnabled(e.Item.Name) == e.Item.Checked)
+        {
+            return;
+        }
+
+        project.SetEnabled(e.Item.Name, e.Item.Checked);
+        try
+        {
+            _store.Save(_settings);
+        }
+        catch (Exception exception)
+        {
+            ShowError($"設定を保存できませんでした。\n{exception.Message}");
+        }
+
+        e.Item.ToolTipText = BuildItemToolTip(e.Item, e.Item.Name);
+        ApplyRowColors(e.Item);
+        UpdateFolderHeading();
+    }
+
+    /// <summary>選択中の項目の「起動する／しない」をまとめて切り替える。1件でもオフがあればすべてオンにする。</summary>
+    private void ToggleSelectedEnabled()
+    {
+        var items = _folderList.SelectedItems.Cast<ListViewItem>().ToArray();
+        if (items.Length == 0)
+        {
+            return;
+        }
+
+        var enable = items.Any(item => !item.Checked);
+        foreach (var item in items)
+        {
+            item.Checked = enable;
+        }
     }
 
     private void OnFolderListDrawSubItem(object? sender, DrawListViewSubItemEventArgs e)
@@ -1044,7 +1137,18 @@ public sealed class MainForm : Form
         var usePathEllipsis = e.ColumnIndex == PathColumn && !LaunchTarget.IsUrl(e.SubItem.Text);
         var flags = TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix
             | (usePathEllipsis ? TextFormatFlags.PathEllipsis : TextFormatFlags.EndEllipsis);
-        var textBounds = Rectangle.FromLTRB(e.Bounds.Left + 4, e.Bounds.Top, e.Bounds.Right - 2, e.Bounds.Bottom);
+        var textLeft = e.Bounds.Left + 4;
+        if (e.ColumnIndex == 0 && _folderList.CheckBoxes)
+        {
+            // チェックボックスはオーナードローでは自分で描く（クリック判定は ListView 標準のまま、行の左端）
+            var state = e.Item.Checked ? CheckBoxState.CheckedNormal : CheckBoxState.UncheckedNormal;
+            var glyph = CheckBoxRenderer.GetGlyphSize(e.Graphics, state);
+            var glyphPoint = new Point(e.Bounds.Left + 4, e.Bounds.Top + (e.Bounds.Height - glyph.Height) / 2);
+            CheckBoxRenderer.DrawCheckBox(e.Graphics, glyphPoint, state);
+            textLeft = glyphPoint.X + glyph.Width + 6;
+        }
+
+        var textBounds = Rectangle.FromLTRB(textLeft, e.Bounds.Top, e.Bounds.Right - 2, e.Bounds.Bottom);
         TextRenderer.DrawText(e.Graphics, e.SubItem.Text, e.SubItem.Font ?? _folderList.Font, textBounds, foreColor, flags);
     }
 
@@ -1088,7 +1192,12 @@ public sealed class MainForm : Form
             lines.Add($"種類: {item.SubItems[KindColumn].Text}　状態: {item.SubItems[StatusColumn].Text}");
         }
 
-        lines.Add("Enter / ダブルクリック: 起動　F2: 表題を変更　Ctrl+C: コピー　Delete: 削除");
+        if (!item.Checked)
+        {
+            lines.Add("チェックなし: 一括起動では開きません（選択して起動すれば開きます）");
+        }
+
+        lines.Add("Enter / ダブルクリック: 起動　Space: 一括起動の対象にする／外す　F2: 表題を変更　Ctrl+C: コピー　Delete: 削除");
         return string.Join("\n", lines);
     }
 
@@ -1096,6 +1205,12 @@ public sealed class MainForm : Form
     private void OnFolderListDoubleClick()
     {
         var hit = _folderList.HitTest(_folderList.PointToClient(MousePosition));
+        if (hit.Location == ListViewHitTestLocations.StateImage)
+        {
+            // チェックボックスの素早い2回クリックは、チェックの操作として扱い起動しない
+            return;
+        }
+
         if (hit.Item is not null && hit.SubItem is not null && hit.Item.SubItems.IndexOf(hit.SubItem) == TitleColumn)
         {
             EditSelectedTitle();
@@ -1148,9 +1263,22 @@ public sealed class MainForm : Form
             return;
         }
 
-        var invalidCount = _folderList.Items.Cast<ListViewItem>().Count(item => item.Tag is TargetStatus { IsValid: false });
-        _folderHeading.Text = invalidCount > 0
-            ? $"{project.Name} の起動項目（無効 {invalidCount} 件）"
+        var items = _folderList.Items.Cast<ListViewItem>().ToArray();
+        var notes = new List<string>();
+        var invalidCount = items.Count(item => item.Tag is TargetStatus { IsValid: false });
+        var disabledCount = items.Count(item => !item.Checked);
+        if (invalidCount > 0)
+        {
+            notes.Add($"無効 {invalidCount} 件");
+        }
+
+        if (disabledCount > 0)
+        {
+            notes.Add($"起動しない {disabledCount} 件");
+        }
+
+        _folderHeading.Text = notes.Count > 0
+            ? $"{project.Name} の起動項目（{string.Join("・", notes)}）"
             : $"{project.Name} の起動項目";
     }
 
@@ -1388,7 +1516,7 @@ public sealed class MainForm : Form
         var selectedPaths = _folderList.SelectedItems.Cast<ListViewItem>().Select(item => item.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var firstIndex = _folderList.SelectedIndices.Cast<int>().Min();
         project.Folders.RemoveAll(folder => selectedPaths.Contains(folder));
-        project.RemoveUnusedTitles();
+        project.RemoveUnusedItemSettings();
         SaveAndRefresh(project.Id);
 
         // 削除した位置の項目を選び、続けて Delete や ↑↓ で操作できるようにする
@@ -1502,7 +1630,15 @@ public sealed class MainForm : Form
             LaunchScope.Urls => LaunchTargetKind.Url,
             _ => null
         };
-        await LaunchItemsAsync(project.Folders.ToArray(), kind, reportMissing: false);
+        // チェックを外した項目（起動しない）は一括起動の対象にしない
+        var enabled = project.Folders.Where(project.IsEnabled).ToArray();
+        if (enabled.Length == 0)
+        {
+            MessageBox.Show(this, "起動する項目がありません。一覧のチェックを付けた項目だけが一括起動の対象になります。", "一括起動", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        await LaunchItemsAsync(enabled, kind, reportMissing: false);
     }
 
     /// <summary>
