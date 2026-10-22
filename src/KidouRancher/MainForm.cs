@@ -42,6 +42,10 @@ public sealed class MainForm : Form
     private readonly ExplorerTabLauncher _launcher = new();
     private readonly ShellIconCache _iconCache = new();
     private SplitContainer _content = null!;
+    private readonly Font _badgeFont = new("Yu Gothic UI", 8.5F);
+
+    // 各項目の確認結果（パス・URL → 状態）。プロジェクト一覧の「無効 N」の表示に使う
+    private readonly Dictionary<string, TargetStatus> _statusCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly ListBox _projectList = new();
     private readonly ListView _folderList = new();
     private readonly TextBox _folderDetail = new();
@@ -93,9 +97,15 @@ public sealed class MainForm : Form
         RefreshProjects(_preferencesStore.Load().LastSelectedProjectId);
         // 起動直後から ↑↓ でプロジェクトを選び、Enter で一括起動できるようにする
         ActiveControl = _projectList;
+        // 表示されたら、すべてのプロジェクトの項目を裏で確認し、一覧の件数表示に反映する
+        Shown += (_, _) => _ = CheckAllProjectsAsync();
         RestoreWindowLayout();
         FormClosing += (_, _) => SavePreferencesOnClose();
-        FormClosed += (_, _) => _iconCache.Dispose();
+        FormClosed += (_, _) =>
+        {
+            _iconCache.Dispose();
+            _badgeFont.Dispose();
+        };
     }
 
     private void BuildLayout()
@@ -169,6 +179,10 @@ public sealed class MainForm : Form
         _projectList.BorderStyle = BorderStyle.None;
         _projectList.IntegralHeight = false;
         _projectList.Font = new Font("Yu Gothic UI", 10F);
+        // プロジェクト名の右に「5件・無効1」のような件数を出すため、項目は自前で描く
+        _projectList.DrawMode = DrawMode.OwnerDrawFixed;
+        _projectList.ItemHeight = _projectList.Font.Height + 8;
+        _projectList.DrawItem += OnProjectListDrawItem;
         _projectList.SelectedIndexChanged += (_, _) =>
         {
             UpdateProjectMoveButtons();
@@ -1048,6 +1062,8 @@ public sealed class MainForm : Form
         }
 
         item.Tag = status;
+        _statusCache[folder] = status;
+        _projectList.Invalidate();
         item.SubItems[KindColumn].Text = LaunchTarget.DisplayName(status.Kind);
         item.SubItems[StatusColumn].Text = $"{(status.IsValid ? "○" : "×")} {status.Text}";
         item.ToolTipText = BuildItemToolTip(item, folder);
@@ -1379,6 +1395,67 @@ public sealed class MainForm : Form
                 FitFolderColumns();
             };
         }
+    }
+
+    /// <summary>プロジェクト一覧の1行：名前を左に、件数（と無効の数）を右に小さく出す。</summary>
+    private void OnProjectListDrawItem(object? sender, DrawItemEventArgs e)
+    {
+        e.DrawBackground();
+        if (e.Index < 0 || e.Index >= _projectList.Items.Count || _projectList.Items[e.Index] is not LauncherProject project)
+        {
+            return;
+        }
+
+        var selected = (e.State & DrawItemState.Selected) != 0;
+        var count = project.Folders.Count;
+        var invalid = project.Folders.Count(item => _statusCache.TryGetValue(item, out var status) && !status.IsValid);
+        var badge = invalid > 0 ? $"{count}件・無効{invalid}" : $"{count}件";
+        var badgeColor = selected ? SystemColors.HighlightText : invalid > 0 ? InvalidColor : PendingColor;
+        var nameColor = selected ? SystemColors.HighlightText : NormalColor;
+
+        var badgeWidth = TextRenderer.MeasureText(e.Graphics, badge, _badgeFont, Size.Empty, TextFormatFlags.NoPadding).Width;
+        var badgeBounds = Rectangle.FromLTRB(e.Bounds.Right - badgeWidth - 8, e.Bounds.Top, e.Bounds.Right - 6, e.Bounds.Bottom);
+        var nameBounds = Rectangle.FromLTRB(e.Bounds.Left + 4, e.Bounds.Top, badgeBounds.Left - 6, e.Bounds.Bottom);
+        const TextFormatFlags flags = TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis;
+        TextRenderer.DrawText(e.Graphics, project.Name, e.Font ?? _projectList.Font, nameBounds, nameColor, flags | TextFormatFlags.Left);
+        TextRenderer.DrawText(e.Graphics, badge, _badgeFont, badgeBounds, badgeColor, flags | TextFormatFlags.Right | TextFormatFlags.NoPadding);
+        e.DrawFocusRectangle();
+    }
+
+    /// <summary>
+    /// すべてのプロジェクトの項目を裏で確認して、プロジェクト一覧の「無効 N」を最新にする。
+    /// フォルダー・ファイルは最大 8 件、URL は最大 4 件ずつ同時に確認する（ネットワークやサーバーへの負担を抑える）。
+    /// </summary>
+    private async Task CheckAllProjectsAsync()
+    {
+        var items = _settings.Projects.SelectMany(project => project.Folders).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        using var pathSlots = new SemaphoreSlim(8);
+        using var urlSlots = new SemaphoreSlim(4);
+        await Task.WhenAll(items.Select(async item =>
+        {
+            var isUrl = LaunchTarget.IsUrl(item);
+            var slots = isUrl ? urlSlots : pathSlots;
+            await slots.WaitAsync();
+            try
+            {
+                var status = isUrl
+                    ? await TargetStatusChecker.CheckUrlAsync(item, CancellationToken.None)
+                    : await Task.Run(() => TargetStatusChecker.CheckPath(item));
+                if (!IsDisposed)
+                {
+                    _statusCache[item] = status;
+                    _projectList.Invalidate();
+                }
+            }
+            catch (Exception exception) when (exception is not OutOfMemoryException)
+            {
+                // 裏での確認に失敗しても、件数の表示が更新されないだけなので知らせない
+            }
+            finally
+            {
+                slots.Release();
+            }
+        }));
     }
 
     private void UpdateProjectMoveButtons()
@@ -1815,6 +1892,7 @@ public sealed class MainForm : Form
 
         var count = dialog.TargetProjects.ToArray().Sum(project => project.ReplaceInItems(dialog.OldText, dialog.NewText));
         SaveAndRefresh(SelectedProject?.Id);
+        _ = CheckAllProjectsAsync();
         MessageBox.Show(this, $"{count} 件を置き換えました。", "一括置き換え", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
@@ -1874,6 +1952,7 @@ public sealed class MainForm : Form
             _store.Save(importedSettings);
             _settings = importedSettings;
             RefreshProjects();
+            _ = CheckAllProjectsAsync();
         }
         catch (Exception exception)
         {
