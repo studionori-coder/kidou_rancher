@@ -3,12 +3,15 @@ using System.Text.Json;
 namespace KidouRancher.Services;
 
 /// <summary>
-/// 画面操作の記憶（前回の書き出し先など）を保存する。
+/// 画面操作の記憶（前回の書き出し先、選択していたプロジェクトなど）を保存する。
 /// バックアップ対象のプロジェクト設定とは混ぜないよう、別ファイルで管理する。
 /// </summary>
 public sealed class AppPreferences
 {
     public string? LastExportPath { get; set; }
+
+    /// <summary>前回終了時に選択していたプロジェクト。次回起動時に選択状態で表示する。</summary>
+    public Guid? LastSelectedProjectId { get; set; }
 }
 
 public sealed class PreferencesStore

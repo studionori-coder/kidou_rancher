@@ -61,7 +61,8 @@ public sealed class MainForm : Form
         }
 
         BuildLayout();
-        RefreshProjects();
+        RefreshProjects(_preferencesStore.Load().LastSelectedProjectId);
+        FormClosing += (_, _) => SaveSelectedProject();
     }
 
     private void BuildLayout()
@@ -659,9 +660,15 @@ public sealed class MainForm : Form
             _projectList.Items.Add(project);
         }
 
+        // 指定のプロジェクトが無ければ（削除済みなど）先頭を選択する
         var selectedIndex = selectedProjectId is null
-            ? Math.Min(_projectList.Items.Count - 1, 0)
+            ? -1
             : _settings.Projects.FindIndex(project => project.Id == selectedProjectId);
+        if (selectedIndex < 0)
+        {
+            selectedIndex = Math.Min(_projectList.Items.Count - 1, 0);
+        }
+
         if (selectedIndex >= 0)
         {
             _projectList.SelectedIndex = selectedIndex;
@@ -783,6 +790,13 @@ public sealed class MainForm : Form
         _folderHeading.Text = invalidCount > 0
             ? $"{project.Name} の起動項目（無効 {invalidCount} 件）"
             : $"{project.Name} の起動項目";
+    }
+
+    private void SaveSelectedProject()
+    {
+        var preferences = _preferencesStore.Load();
+        preferences.LastSelectedProjectId = SelectedProject?.Id;
+        _preferencesStore.Save(preferences);
     }
 
     private void UpdateProjectMoveButtons()

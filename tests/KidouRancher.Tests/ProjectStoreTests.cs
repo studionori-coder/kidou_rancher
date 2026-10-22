@@ -78,6 +78,32 @@ public sealed class ProjectStoreTests
     }
 
     [TestMethod]
+    public void Preferences_RoundTripsLastSelectedProject()
+    {
+        using var temporaryDirectory = new TemporaryDirectory();
+        var store = new PreferencesStore(Path.Combine(temporaryDirectory.Path, "preferences.json"));
+        var projectId = Guid.NewGuid();
+
+        store.Save(new AppPreferences { LastExportPath = @"D:\backup\my-backup.json", LastSelectedProjectId = projectId });
+
+        var loaded = store.Load();
+        Assert.AreEqual(projectId, loaded.LastSelectedProjectId);
+        Assert.AreEqual(@"D:\backup\my-backup.json", loaded.LastExportPath);
+    }
+
+    [TestMethod]
+    public void Preferences_LoadsFilesFromOlderVersionsWithoutSelectedProject()
+    {
+        using var temporaryDirectory = new TemporaryDirectory();
+        var filePath = Path.Combine(temporaryDirectory.Path, "preferences.json");
+        File.WriteAllText(filePath, """{ "LastExportPath": "D:\\backup.json" }""");
+
+        var loaded = new PreferencesStore(filePath).Load();
+        Assert.IsNull(loaded.LastSelectedProjectId);
+        Assert.AreEqual(@"D:\backup.json", loaded.LastExportPath);
+    }
+
+    [TestMethod]
     public void Preferences_ReturnsDefaultsWhenFileIsBroken()
     {
         using var temporaryDirectory = new TemporaryDirectory();
