@@ -181,9 +181,11 @@ public sealed class MainForm : Form
         _folderList.DragLeave += (_, _) => SetFolderDropIndex(-1);
         _folderList.DragDrop += OnFolderListDragDrop;
         _folderList.ItemDrag += OnFolderListItemDrag;
-        _folderList.Columns.Add("フォルダー / ファイル / URL", 360);
-        _folderList.Columns.Add("種類", 70);
-        _folderList.Columns.Add("状態", 170);
+        _folderList.Columns.Add("フォルダー / ファイル / URL", 300);
+        _folderList.Columns.Add("種類", 80);
+        _folderList.Columns.Add("状態", 200);
+        // パスの列を残りの幅いっぱいに広げ、状態の列が切れたり横スクロールが出たりしないようにする
+        _folderList.ClientSizeChanged += (_, _) => FitFolderColumns();
         folderLayout.Controls.Add(_folderList, 0, 1);
 
         var folderButtons = new FlowLayoutPanel
@@ -744,13 +746,28 @@ public sealed class MainForm : Form
             return;
         }
 
+        var textColor = status.IsValid ? NormalColor : InvalidColor;
         item.Tag = status;
-        item.ForeColor = status.IsValid ? NormalColor : InvalidColor;
+        item.ForeColor = textColor;
+        // UseItemStyleForSubItems が false のときは各セルの色を個別に設定し、行ごと再描画する
+        item.SubItems[0].ForeColor = textColor;
         item.SubItems[1].Text = LaunchTarget.DisplayName(status.Kind);
-        item.SubItems[1].ForeColor = item.ForeColor;
+        item.SubItems[1].ForeColor = textColor;
         item.SubItems[2].Text = $"{(status.IsValid ? "○" : "×")} {status.Text}";
         item.SubItems[2].ForeColor = status.IsValid ? ValidColor : InvalidColor;
+        _folderList.Invalidate(item.Bounds);
         UpdateFolderHeading();
+    }
+
+    private void FitFolderColumns()
+    {
+        if (_folderList.Columns.Count < 3)
+        {
+            return;
+        }
+
+        var otherColumnsWidth = _folderList.Columns[1].Width + _folderList.Columns[2].Width;
+        _folderList.Columns[0].Width = Math.Max(160, _folderList.ClientSize.Width - otherColumnsWidth - 4);
     }
 
     private void UpdateFolderHeading()
