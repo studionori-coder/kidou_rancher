@@ -150,9 +150,12 @@ public sealed class MainForm : Form
         _folderList.SelectedIndexChanged += (_, _) => UpdateFolderMoveButtons();
         _folderList.ContextMenuStrip = CreateFolderContextMenu();
         _folderList.KeyDown += OnFolderListKeyDown;
-        _folderList.DoubleClick += (_, _) => OpenSelectedFolders();
-        _folderList.Columns.Add("フォルダー", 480);
-        _folderList.Columns.Add("状態", 100);
+        _folderList.DoubleClick += (_, _) => OpenSelectedItems();
+        _folderList.AllowDrop = true;
+        _folderList.DragEnter += OnFolderListDragEnter;
+        _folderList.DragDrop += OnFolderListDragDrop;
+        _folderList.Columns.Add("フォルダー / ファイル / URL", 480);
+        _folderList.Columns.Add("種類", 100);
         folderLayout.Controls.Add(_folderList, 0, 1);
 
         var folderButtons = new FlowLayoutPanel
@@ -162,7 +165,7 @@ public sealed class MainForm : Form
             WrapContents = false,
             Padding = new Padding(0, 7, 0, 0)
         };
-        folderButtons.Controls.Add(CreateButton("フォルダーを追加", (_, _) => AddFolders()));
+        folderButtons.Controls.Add(CreateAddItemButton());
         folderButtons.Controls.Add(CreateButton("選択を削除", (_, _) => RemoveFolders()));
         ApplyButtonStyle(_moveFolderUpButton);
         ApplyButtonStyle(_moveFolderDownButton);
@@ -197,8 +200,8 @@ public sealed class MainForm : Form
     private ContextMenuStrip CreateFolderContextMenu()
     {
         var menu = new ContextMenuStrip();
-        menu.Items.Add(new ToolStripMenuItem("パスをコピー", null, (_, _) => CopySelectedFolderPaths()) { ShortcutKeyDisplayString = "Ctrl+C" });
-        menu.Items.Add(new ToolStripMenuItem("エクスプローラーで開く", null, (_, _) => OpenSelectedFolders()) { ShortcutKeyDisplayString = "Enter" });
+        menu.Items.Add(new ToolStripMenuItem("パス / URL をコピー", null, (_, _) => CopySelectedFolderPaths()) { ShortcutKeyDisplayString = "Ctrl+C" });
+        menu.Items.Add(new ToolStripMenuItem("開く", null, (_, _) => OpenSelectedItems()) { ShortcutKeyDisplayString = "Enter" });
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(new ToolStripMenuItem("削除", null, (_, _) => RemoveFolders()) { ShortcutKeyDisplayString = "Delete" });
 
@@ -222,7 +225,7 @@ public sealed class MainForm : Form
         }
         else if (e.KeyCode == Keys.Enter)
         {
-            OpenSelectedFolders();
+            OpenSelectedItems();
         }
         else if (e.KeyCode == Keys.Delete)
         {
@@ -235,6 +238,48 @@ public sealed class MainForm : Form
 
         e.Handled = true;
         e.SuppressKeyPress = true;
+    }
+
+    private Button CreateAddItemButton()
+    {
+        var menu = new ContextMenuStrip();
+        menu.Items.Add("フォルダー…", null, (_, _) => AddFolders());
+        menu.Items.Add("ファイル…", null, (_, _) => AddFiles());
+        menu.Items.Add("URL…", null, (_, _) => AddUrl());
+
+        Button? button = null;
+        button = CreateButton("追加 ▾", (_, _) => menu.Show(button!, new Point(0, button!.Height)));
+        return button;
+    }
+
+    private void OnFolderListDragEnter(object? sender, DragEventArgs e)
+    {
+        var canDrop = SelectedProject is not null
+            && e.Data is not null
+            && (e.Data.GetDataPresent(DataFormats.FileDrop) || e.Data.GetDataPresent(DataFormats.UnicodeText));
+        e.Effect = canDrop ? DragDropEffects.Copy : DragDropEffects.None;
+    }
+
+    private void OnFolderListDragDrop(object? sender, DragEventArgs e)
+    {
+        // エクスプローラーからはファイル・フォルダー、ブラウザーからはURLの文字列がドロップされる
+        if (e.Data?.GetData(DataFormats.FileDrop) is string[] paths)
+        {
+            AddItems(paths);
+        }
+        else if (e.Data?.GetData(DataFormats.UnicodeText) is string text)
+        {
+            var urls = text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(LaunchTarget.IsUrl)
+                .ToArray();
+            if (urls.Length == 0)
+            {
+                ShowError("ドロップされた内容はURLではありません。");
+                return;
+            }
+
+            AddItems(urls);
+        }
     }
 
     private TableLayoutPanel CreateProjectButtons()
@@ -345,7 +390,7 @@ public sealed class MainForm : Form
         }
 
         var project = SelectedProject;
-        _folderHeading.Text = project is null ? "フォルダー" : $"{project.Name} のフォルダー";
+        _folderHeading.Text = project is null ? "起動する項目" : $"{project.Name} の起動項目";
         var version = ++_folderStatusVersion;
         _folderList.BeginUpdate();
         _folderList.Items.Clear();
@@ -353,7 +398,7 @@ public sealed class MainForm : Form
         {
             foreach (var folder in project.Folders)
             {
-                // 存在確認は非同期で行い、結果が出るまでは「確認中」と表示する
+                // 種類の判定（存在確認）は非同期で行い、結果が出るまでは「確認中」と表示する
                 var item = new ListViewItem(folder) { ForeColor = Color.FromArgb(120, 132, 140) };
                 item.SubItems.Add("確認中…");
                 _folderList.Items.Add(item);
@@ -371,7 +416,7 @@ public sealed class MainForm : Form
 
     private async Task UpdateFolderStatusesAsync(int version, string[] folders)
     {
-        var results = await Task.Run(() => folders.Select(Directory.Exists).ToArray());
+        var results = await Task.Run(() => folders.Select(LaunchTarget.Classify).ToArray());
         if (version != _folderStatusVersion || IsDisposed || _folderList.Items.Count != folders.Length)
         {
             return;
@@ -386,9 +431,9 @@ public sealed class MainForm : Form
                 continue;
             }
 
-            var exists = results[index];
-            item.ForeColor = exists ? Color.FromArgb(44, 59, 68) : Color.FromArgb(185, 73, 61);
-            item.SubItems[1].Text = exists ? "利用可能" : "見つかりません";
+            var kind = results[index];
+            item.ForeColor = kind == LaunchTargetKind.Missing ? Color.FromArgb(185, 73, 61) : Color.FromArgb(44, 59, 68);
+            item.SubItems[1].Text = LaunchTarget.DisplayName(kind);
         }
 
         _folderList.EndUpdate();
@@ -500,12 +545,64 @@ public sealed class MainForm : Form
             return;
         }
 
-        var folders = dialog.SelectedPaths.Length > 0 ? dialog.SelectedPaths : [dialog.SelectedPath];
-        foreach (var folder in folders.Where(folder => !string.IsNullOrWhiteSpace(folder)))
+        AddItems(dialog.SelectedPaths.Length > 0 ? dialog.SelectedPaths : [dialog.SelectedPath]);
+    }
+
+    private void AddFiles()
+    {
+        if (SelectedProject is null)
         {
-            if (!project.Folders.Contains(folder, StringComparer.OrdinalIgnoreCase))
+            return;
+        }
+
+        using var dialog = new OpenFileDialog
+        {
+            Title = "追加するファイルを選択してください。",
+            Filter = "すべてのファイル (*.*)|*.*",
+            Multiselect = true
+        };
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+        {
+            AddItems(dialog.FileNames);
+        }
+    }
+
+    private void AddUrl()
+    {
+        if (SelectedProject is null)
+        {
+            return;
+        }
+
+        var input = PromptForName("URLを追加", "URL（例: https://example.com）");
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return;
+        }
+
+        var url = LaunchTarget.NormalizeUrl(input);
+        if (url is null)
+        {
+            ShowError("URLの形式が正しくありません。");
+            return;
+        }
+
+        AddItems([url]);
+    }
+
+    private void AddItems(IEnumerable<string> items)
+    {
+        var project = SelectedProject;
+        if (project is null)
+        {
+            return;
+        }
+
+        foreach (var item in items.Where(item => !string.IsNullOrWhiteSpace(item)).Select(item => item.Trim()))
+        {
+            if (!project.Folders.Contains(item, StringComparer.OrdinalIgnoreCase))
             {
-                project.Folders.Add(folder);
+                project.Folders.Add(item);
             }
         }
 
@@ -547,7 +644,7 @@ public sealed class MainForm : Form
         }
     }
 
-    private void OpenSelectedFolders()
+    private void OpenSelectedItems()
     {
         var paths = SelectedFolderPaths();
         if (paths.Length == 0)
@@ -555,12 +652,36 @@ public sealed class MainForm : Form
             return;
         }
 
-        var missing = paths.Where(path => !Directory.Exists(path)).ToArray();
-        ExplorerTabLauncher.OpenIndividually(paths);
-        if (missing.Length > 0)
+        var errors = OpenItems(paths.Select(path => (path, LaunchTarget.Classify(path))).ToArray());
+        if (errors.Count > 0)
         {
-            ShowError($"次のフォルダーが見つかりません。\n{string.Join(Environment.NewLine, missing)}");
+            ShowError(string.Join(Environment.NewLine, errors));
         }
+    }
+
+    /// <summary>フォルダーは個別のウィンドウ、ファイル・URLは既定のアプリで開き、開けなかった項目の説明を返す。</summary>
+    private static List<string> OpenItems(IEnumerable<(string Path, LaunchTargetKind Kind)> targets)
+    {
+        var errors = new List<string>();
+        foreach (var (path, kind) in targets)
+        {
+            if (kind == LaunchTargetKind.Missing)
+            {
+                errors.Add($"見つかりません: {path}");
+                continue;
+            }
+
+            try
+            {
+                LaunchTarget.Open(path, kind);
+            }
+            catch (Exception exception)
+            {
+                errors.Add($"開けませんでした: {path}（{exception.Message}）");
+            }
+        }
+
+        return errors;
     }
 
     private void MoveSelectedFolder(int direction)
@@ -593,23 +714,43 @@ public sealed class MainForm : Form
         _launchButton.Enabled = false;
         try
         {
-            var result = await _launcher.OpenFoldersAsync(project.Folders, CancellationToken.None);
-            if (result.Success)
+            // 存在確認はスリープ中のドライブ等で時間がかかることがあるため、UIスレッド外で行う
+            var items = project.Folders.ToArray();
+            var targets = await Task.Run(() => items.Select(item => (Path: item, Kind: LaunchTarget.Classify(item))).ToArray());
+            var folders = targets.Where(target => target.Kind == LaunchTargetKind.Folder).Select(target => target.Path).ToArray();
+            var others = targets.Where(target => target.Kind is LaunchTargetKind.File or LaunchTargetKind.Url).ToArray();
+            if (folders.Length == 0 && others.Length == 0)
             {
+                MessageBox.Show(this, "起動できる項目が見つかりません。パスやURLを確認してください。", "一括起動", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
-            var remaining = (result.RemainingFolders ?? project.Folders.Where(Directory.Exists).ToArray()).ToArray();
-            if (remaining.Length == 0)
+            // フォルダーをエクスプローラーのタブで開いてから、ファイルとURLを順に開く（見つからない項目はスキップ）
+            if (folders.Length > 0)
             {
-                MessageBox.Show(this, result.Message, "一括起動", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
+                var result = await _launcher.OpenFoldersAsync(folders, CancellationToken.None);
+                if (!result.Success)
+                {
+                    var remaining = (result.RemainingFolders ?? folders).ToArray();
+                    if (remaining.Length == 0)
+                    {
+                        MessageBox.Show(this, result.Message, "一括起動", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                    else
+                    {
+                        var prompt = result.Message + $"\n\n未起動のフォルダー {remaining.Length} 件を個別のウィンドウで開きますか？";
+                        if (MessageBox.Show(this, prompt, "一括起動", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+                        {
+                            ExplorerTabLauncher.OpenIndividually(remaining);
+                        }
+                    }
+                }
             }
 
-            var prompt = result.Message + $"\n\n未起動のフォルダー {remaining.Length} 件を個別のウィンドウで開きますか？";
-            if (MessageBox.Show(this, prompt, "一括起動", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
+            var errors = OpenItems(others);
+            if (errors.Count > 0)
             {
-                ExplorerTabLauncher.OpenIndividually(remaining);
+                MessageBox.Show(this, string.Join(Environment.NewLine, errors), "一括起動", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
         finally
