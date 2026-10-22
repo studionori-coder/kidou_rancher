@@ -47,6 +47,7 @@ public sealed class MainForm : Form
     // 各項目の確認結果（パス・URL → 状態）。プロジェクト一覧の「無効 N」の表示に使う
     private readonly Dictionary<string, TargetStatus> _statusCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly ListBox _projectList = new();
+    private readonly TextBox _searchBox = new();
     private readonly ListView _folderList = new();
     private readonly TextBox _folderDetail = new();
     private readonly Label _folderHeading = new();
@@ -167,8 +168,9 @@ public sealed class MainForm : Form
 
         var projectPanel = CreatePanel();
         content.Panel1.Controls.Add(projectPanel);
-        var projectLayout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1 };
+        var projectLayout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 4, ColumnCount = 1 };
         projectLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        projectLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
         projectLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         projectLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 78));
         projectPanel.Controls.Add(projectLayout);
@@ -180,6 +182,15 @@ public sealed class MainForm : Form
             ForeColor = Color.FromArgb(64, 78, 88),
             TextAlign = ContentAlignment.MiddleLeft
         }, 0, 0);
+        // 検索：プロジェクト名・表題・パス／URLで、左右の一覧をその場で絞り込む（Ctrl+F）
+        _searchBox.Dock = DockStyle.Fill;
+        _searchBox.Margin = new Padding(0, 0, 0, 6);
+        _searchBox.PlaceholderText = "検索（Ctrl+F）名前・表題・パス";
+        _searchBox.TextChanged += (_, _) => RefreshProjects(SelectedProject?.Id);
+        _searchBox.KeyDown += OnSearchBoxKeyDown;
+        _toolTip.SetToolTip(_searchBox, "入力すると、プロジェクト名・表題・パス／URLで絞り込みます。↓ / Enter で一覧へ、Esc で検索を消す");
+        projectLayout.Controls.Add(_searchBox, 0, 1);
+
         _projectList.Dock = DockStyle.Fill;
         _projectList.BorderStyle = BorderStyle.None;
         _projectList.IntegralHeight = false;
@@ -207,8 +218,8 @@ public sealed class MainForm : Form
             SetProjectDropTarget(-1);
         };
         _projectList.DragDrop += OnProjectListDragDrop;
-        projectLayout.Controls.Add(_projectList, 0, 1);
-        projectLayout.Controls.Add(CreateProjectButtons(), 0, 2);
+        projectLayout.Controls.Add(_projectList, 0, 2);
+        projectLayout.Controls.Add(CreateProjectButtons(), 0, 3);
 
         var folderPanel = CreatePanel();
         folderPanel.Padding = new Padding(18);
@@ -533,6 +544,10 @@ public sealed class MainForm : Form
             case Keys.Control | Keys.H:
                 ReplacePaths();
                 return true;
+            case Keys.Control | Keys.F:
+                _searchBox.Focus();
+                _searchBox.SelectAll();
+                return true;
             case Keys.F6:
             case Keys.Shift | Keys.F6:
                 if (_folderList.ContainsFocus)
@@ -604,6 +619,7 @@ public sealed class MainForm : Form
               F6　　　　　　左右の一覧を切り替え
               Ctrl+N　　　　新しいプロジェクト
               Ctrl+H　　　　パス・URL の一括置き換え
+              Ctrl+F　　　　検索（↓ / Enter で一覧へ、Esc で検索を消す）
               Ctrl+D / Ctrl+O / Ctrl+L　フォルダー / ファイル / パス・URL を追加
               F1　　　　　　この一覧
 
@@ -682,7 +698,7 @@ public sealed class MainForm : Form
             _projectList.SelectedIndex = index;
         }
 
-        _projectDragStartIndex = e.Button == MouseButtons.Left ? index : -1;
+        _projectDragStartIndex = e.Button == MouseButtons.Left && !IsSearching ? index : -1;
         _projectDragStartPoint = e.Location;
     }
 
@@ -900,6 +916,14 @@ public sealed class MainForm : Form
         // 一覧内での並び替え
         if (e.Data.GetDataPresent(ItemsDragFormat))
         {
+            if (IsFolderListFiltered)
+            {
+                // 絞り込み中は一覧内で並び替えない（左のプロジェクトへの移動・コピーはできる）
+                e.Effect = DragDropEffects.None;
+                SetFolderDropIndex(-1);
+                return;
+            }
+
             e.Effect = DragDropEffects.Move;
             SetFolderDropIndex(GetFolderInsertionIndex(_folderList.PointToClient(new Point(e.X, e.Y))));
             return;
@@ -1098,15 +1122,16 @@ public sealed class MainForm : Form
         _updatingSelection = true;
         _projectList.BeginUpdate();
         _projectList.Items.Clear();
-        foreach (var project in _settings.Projects)
+        var shownProjects = _settings.Projects.Where(project => SearchFilter.ProjectMatches(project, SearchText)).ToList();
+        foreach (var project in shownProjects)
         {
             _projectList.Items.Add(project);
         }
 
-        // 指定のプロジェクトが無ければ（削除済みなど）先頭を選択する
+        // 指定のプロジェクトが無ければ（削除済み・検索で隠れたなど）先頭を選択する
         var selectedIndex = selectedProjectId is null
             ? -1
-            : _settings.Projects.FindIndex(project => project.Id == selectedProjectId);
+            : shownProjects.FindIndex(project => project.Id == selectedProjectId);
         if (selectedIndex < 0)
         {
             selectedIndex = Math.Min(_projectList.Items.Count - 1, 0);
@@ -1138,9 +1163,10 @@ public sealed class MainForm : Form
         _populatingFolders = true;
         _folderList.BeginUpdate();
         _folderList.Items.Clear();
+        var shownItems = project is null ? Array.Empty<string>() : SearchFilter.VisibleItems(project, SearchText).ToArray();
         if (project is not null)
         {
-            foreach (var folder in project.Folders)
+            foreach (var folder in shownItems)
             {
                 // 有効かどうかの確認は非同期で行い、結果が出るまでは「確認中」と表示する
                 var item = new ListViewItem(project.GetTitle(folder)) { Name = folder, ForeColor = PendingColor, UseItemStyleForSubItems = false, Checked = project.IsEnabled(folder) };
@@ -1163,9 +1189,9 @@ public sealed class MainForm : Form
         UpdateFolderHeading();
         _launchButton.Enabled = project is { Folders.Count: > 0 };
         UpdateFolderMoveButtons();
-        if (project is { Folders.Count: > 0 })
+        if (shownItems.Length > 0)
         {
-            _ = UpdateFolderStatusesAsync(version, project.Folders.ToArray(), _statusCheckCancellation.Token);
+            _ = UpdateFolderStatusesAsync(version, shownItems, _statusCheckCancellation.Token);
         }
     }
 
@@ -1475,6 +1501,11 @@ public sealed class MainForm : Form
             notes.Add($"起動しない {disabledCount} 件");
         }
 
+        if (IsFolderListFiltered)
+        {
+            notes.Add($"検索で {items.Length} / {project.Folders.Count} 件を表示");
+        }
+
         _folderHeading.Text = notes.Count > 0
             ? $"{project.Name} の起動項目（{string.Join("・", notes)}）"
             : $"{project.Name} の起動項目";
@@ -1630,17 +1661,64 @@ public sealed class MainForm : Form
         }
     }
 
+    private string SearchText => _searchBox.Text.Trim();
+
+    private bool IsSearching => SearchText.Length > 0;
+
+    /// <summary>右の一覧が検索で一部だけになっているか（並び替えの可否に使う）。</summary>
+    private bool IsFolderListFiltered => SelectedProject is { } project && _folderList.Items.Count != project.Folders.Count;
+
+    private void ClearSearch()
+    {
+        if (_searchBox.Text.Length > 0)
+        {
+            _searchBox.Text = string.Empty;
+        }
+    }
+
+    private void OnSearchBoxKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.KeyCode == Keys.Escape)
+        {
+            // 1回目で検索を消し、空なら一覧へ戻る
+            if (_searchBox.Text.Length > 0)
+            {
+                ClearSearch();
+            }
+            else
+            {
+                _projectList.Focus();
+            }
+        }
+        else if (e.KeyCode is Keys.Down or Keys.Enter)
+        {
+            _projectList.Focus();
+            if (_projectList.SelectedIndex < 0 && _projectList.Items.Count > 0)
+            {
+                _projectList.SelectedIndex = 0;
+            }
+        }
+        else
+        {
+            return;
+        }
+
+        e.Handled = true;
+        e.SuppressKeyPress = true;
+    }
+
     private void UpdateProjectMoveButtons()
     {
         var selectedIndex = _projectList.SelectedIndex;
-        _moveProjectUpButton.Enabled = selectedIndex > 0;
-        _moveProjectDownButton.Enabled = selectedIndex >= 0 && selectedIndex < _settings.Projects.Count - 1;
+        // 検索で絞り込んでいる間は、一覧の位置と保存上の並びが一致しないため並び替えできない
+        _moveProjectUpButton.Enabled = !IsSearching && selectedIndex > 0;
+        _moveProjectDownButton.Enabled = !IsSearching && selectedIndex >= 0 && selectedIndex < _settings.Projects.Count - 1;
     }
 
     private void UpdateFolderMoveButtons()
     {
         var project = SelectedProject;
-        var canMove = project is not null && _folderList.SelectedIndices.Count == 1;
+        var canMove = project is not null && _folderList.SelectedIndices.Count == 1 && !IsFolderListFiltered;
         var selectedIndex = canMove ? _folderList.SelectedIndices[0] : -1;
         _moveFolderUpButton.Enabled = canMove && selectedIndex > 0;
         _moveFolderDownButton.Enabled = canMove && selectedIndex < project!.Folders.Count - 1;
@@ -1662,6 +1740,7 @@ public sealed class MainForm : Form
         }
 
         var project = new LauncherProject { Name = name };
+        ClearSearch();
         _settings.Projects.Add(project);
         SaveAndRefresh(project.Id);
         _projectList.Focus();
@@ -1711,7 +1790,7 @@ public sealed class MainForm : Form
     private void MoveSelectedProject(int direction)
     {
         var project = SelectedProject;
-        if (project is null)
+        if (project is null || IsSearching)
         {
             return;
         }
@@ -1832,6 +1911,8 @@ public sealed class MainForm : Form
             return;
         }
 
+        // 追加した項目が検索で隠れないよう、検索を消してから追加する
+        ClearSearch();
         var requested = items.Where(item => !string.IsNullOrWhiteSpace(item)).Select(item => item.Trim()).ToArray();
         foreach (var item in requested)
         {
@@ -1925,7 +2006,7 @@ public sealed class MainForm : Form
     private void MoveSelectedFolder(int direction)
     {
         var project = SelectedProject;
-        if (project is null || _folderList.SelectedIndices.Count != 1)
+        if (project is null || _folderList.SelectedIndices.Count != 1 || IsFolderListFiltered)
         {
             return;
         }
