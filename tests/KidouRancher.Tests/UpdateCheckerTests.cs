@@ -17,10 +17,13 @@ public sealed class UpdateCheckerTests
         Assert.AreEqual(expected, UpdateChecker.IsNewer(tag, Version.Parse(current)));
 
     [TestMethod]
-    [DataRow(null)]
+    public void IsNewer_IgnoresMissingTag() =>
+        Assert.IsFalse(UpdateChecker.IsNewer(null, new Version(1, 0, 0)));
+
+    [TestMethod]
     [DataRow("")]
     [DataRow("latest")]
     [DataRow("release-2026")]
-    public void IsNewer_IgnoresTagsThatAreNotVersions(string? tag) =>
+    public void IsNewer_IgnoresTagsThatAreNotVersions(string tag) =>
         Assert.IsFalse(UpdateChecker.IsNewer(tag, new Version(1, 0, 0)));
 }
